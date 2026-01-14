@@ -173,14 +173,14 @@ async fn handle_request(request: Request, auth: &mut AuthSession) -> Response {
 
         Request::ListSessions => {
             tracing::debug!("Listing sessions");
-            // TODO: Enumerate /usr/share/xsessions and /usr/share/wayland-sessions
-            Response::Sessions { sessions: vec![] }
+            let sessions = gardmd::list_sessions();
+            Response::Sessions { sessions }
         }
 
         Request::ListUsers => {
             tracing::debug!("Listing users");
-            // TODO: Enumerate users from /etc/passwd
-            Response::Users { users: vec![] }
+            let users = gardmd::list_users();
+            Response::Users { users }
         }
     }
 }

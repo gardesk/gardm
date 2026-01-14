@@ -5,7 +5,9 @@
 pub mod auth;
 pub mod config;
 pub mod ipc;
+pub mod sessions;
 
 pub use auth::{AuthResponse, AuthSession};
 pub use config::Config;
 pub use ipc::{ClientConnection, Server};
+pub use sessions::{list_sessions, list_users};

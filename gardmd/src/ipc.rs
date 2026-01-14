@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 use gardm_ipc::{Request, Response, SOCKET_PATH};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -35,6 +36,10 @@ impl Server {
         }
 
         let listener = UnixListener::bind(path)?;
+
+        // Set socket permissions (owner read/write only)
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+
         tracing::info!("IPC server listening on {}", path.display());
 
         Ok(Self { listener })
