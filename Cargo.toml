@@ -1,0 +1,41 @@
+[workspace]
+members = ["gardmd", "gardm-greeter", "gardm-ipc"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/mfwolffe/gardesk"
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Async runtime
+tokio = { version = "1", features = ["full", "signal"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Unix/Linux
+nix = { version = "0.27", features = ["user", "process", "signal"] }
+
+# X11
+x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
+
+# Graphics
+cairo-rs = { version = "0.18", features = ["png"] }
+pango = "0.18"
+pangocairo = "0.18"
+image = "0.24"
+
+# IPC
+gardm-ipc = { path = "gardm-ipc" }

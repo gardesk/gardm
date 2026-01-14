@@ -1,0 +1,18 @@
+[package]
+name = "gardm-greeter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "gar display manager greeter"
+
+[[bin]]
+name = "gardm-greeter"
+path = "src/main.rs"
+
+[dependencies]
+gardm-ipc = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }

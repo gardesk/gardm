@@ -1,0 +1,25 @@
+[Unit]
+Description=gar Display Manager
+Documentation=https://github.com/mfwolffe/gardesk
+After=systemd-user-sessions.service getty@tty1.service plymouth-quit.service
+Conflicts=getty@tty1.service
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/gardmd
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=1
+
+# Security hardening
+NoNewPrivileges=no
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/run
+
+# PAM needs access to various system files
+ReadOnlyPaths=/etc/passwd /etc/shadow /etc/group /etc/pam.d
+
+[Install]
+Alias=display-manager.service
