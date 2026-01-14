@@ -3,7 +3,8 @@
 //! Main entry point with signal handling and systemd integration.
 
 use anyhow::Result;
-use gardmd::{config::Config, ipc};
+use gardmd::{auth::AuthSession, config::Config, ipc};
+use gardm_ipc::{Request, Response};
 use tokio::signal::unix::{signal, SignalKind};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -80,10 +81,12 @@ async fn main() -> Result<()> {
 
 /// Handle a connected greeter client
 async fn handle_client(mut conn: ipc::ClientConnection, _config: Config) {
+    let mut auth = AuthSession::new();
+
     loop {
         match conn.recv().await {
             Ok(Some(request)) => {
-                let response = handle_request(request).await;
+                let response = handle_request(request, &mut auth).await;
                 if let Err(e) = conn.send(&response).await {
                     tracing::error!("Failed to send response: {}", e);
                     break;
@@ -102,36 +105,45 @@ async fn handle_client(mut conn: ipc::ClientConnection, _config: Config) {
 }
 
 /// Process a request and return a response
-async fn handle_request(request: gardm_ipc::Request) -> gardm_ipc::Response {
-    use gardm_ipc::{Request, Response};
+async fn handle_request(request: Request, auth: &mut AuthSession) -> Response {
+    use gardmd::auth::AuthResponse;
 
     match request {
         Request::CreateSession { username } => {
-            tracing::info!("Creating session for user: {}", username);
-            // TODO: Implement PAM session creation
-            Response::AuthPrompt {
-                prompt: "Password:".to_string(),
-                echo: false,
+            match auth.create_session(&username) {
+                AuthResponse::Prompt { prompt, echo } => Response::AuthPrompt { prompt, echo },
+                AuthResponse::Error { message } => Response::Error { message },
+                _ => Response::Error {
+                    message: "Unexpected auth response".to_string(),
+                },
             }
         }
 
-        Request::Authenticate { response: _ } => {
-            // TODO: Implement PAM authentication
-            Response::Error {
-                message: "PAM not yet implemented".to_string(),
+        Request::Authenticate { response: password } => {
+            match auth.authenticate(&password).await {
+                AuthResponse::Success => Response::Success,
+                AuthResponse::Prompt { prompt, echo } => Response::AuthPrompt { prompt, echo },
+                AuthResponse::Error { message } => Response::AuthError { message },
+                AuthResponse::Info { message } => Response::AuthInfo { message },
             }
         }
 
-        Request::StartSession { cmd, env } => {
-            tracing::info!("Start session request: {:?} env={:?}", cmd, env);
-            // TODO: Implement session start
-            Response::Error {
-                message: "Session start not yet implemented".to_string(),
+        Request::StartSession { cmd, env: _ } => {
+            if let Some(username) = auth.take_authenticated() {
+                tracing::info!(username, ?cmd, "Starting session");
+                // TODO: Actually start the session (Sprint 2)
+                Response::Error {
+                    message: "Session start not yet implemented".to_string(),
+                }
+            } else {
+                Response::Error {
+                    message: "Not authenticated".to_string(),
+                }
             }
         }
 
         Request::CancelSession => {
-            tracing::info!("Session cancelled");
+            auth.cancel();
             Response::Success
         }
 
