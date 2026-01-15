@@ -8,6 +8,7 @@ mod config;
 mod garbg;
 mod icons;
 mod keyboard;
+mod monitors;
 mod render;
 mod transition;
 mod widgets;
@@ -25,6 +26,7 @@ use background::{load_blurred_background, render_to_cairo, solid_background};
 use config::GreeterConfig;
 use garbg::WallpaperResolver;
 use keyboard::{keycode_to_char, keycodes};
+use monitors::{fallback_config, MonitorConfig};
 use render::Renderer;
 use transition::{render_with_fade, FadeOutTransition};
 use widgets::{FocusedField, LoginForm, PowerAction, PowerButtons, SessionSelector, UserList};
@@ -53,7 +55,35 @@ async fn main() -> Result<()> {
     let height = window.height();
     tracing::info!(width, height, "Window created");
 
-    // Create renderer
+    // Detect monitors using RandR
+    let monitor_config = MonitorConfig::detect(window.conn(), window.root())
+        .unwrap_or_else(|e| {
+            tracing::warn!("Failed to detect monitors: {}, using fallback", e);
+            fallback_config(width, height)
+        });
+
+    // Get the primary monitor for UI positioning
+    let primary = monitor_config.primary_or_first().cloned().unwrap_or_else(|| {
+        monitors::Monitor {
+            x: 0,
+            y: 0,
+            width,
+            height,
+            primary: true,
+            name: "fallback".to_string(),
+        }
+    });
+
+    let center_x = primary.center_x();
+    let center_y = primary.center_y();
+    tracing::info!(
+        monitor = %primary.name,
+        center_x,
+        center_y,
+        "UI centered on primary monitor"
+    );
+
+    // Create renderer for the full virtual screen
     let mut renderer = Renderer::new(width, height).context("Failed to create renderer")?;
 
     // Resolve wallpaper using garbg integration
@@ -82,8 +112,8 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Create login form
-    let mut form = LoginForm::new(width as f64, height as f64);
+    // Create login form centered on primary monitor
+    let mut form = LoginForm::new(center_x, center_y);
 
     // Connect to daemon
     let mut client = Client::connect().await.context("Failed to connect to gardmd")?;
@@ -103,17 +133,22 @@ async fn main() -> Result<()> {
     };
     tracing::debug!(count = users.len(), "Available users");
 
-    // Create user list (above login form)
-    let mut user_list = UserList::new(users, width as f64, height as f64);
+    // Create user list centered on primary monitor (above login form)
+    let mut user_list = UserList::new(users, center_x, center_y);
 
-    // Create session selector (positioned below login form)
+    // Create session selector (positioned below login form on primary monitor)
     let selector_width = 200.0;
-    let selector_x = (width as f64 - selector_width) / 2.0;
-    let selector_y = height as f64 / 2.0 + 180.0; // Below the login form
+    let selector_x = center_x - selector_width / 2.0;
+    let selector_y = center_y + 180.0; // Below the login form
     let mut session_selector = SessionSelector::new(sessions, selector_x, selector_y, selector_width);
 
-    // Create power buttons (bottom-right corner)
-    let mut power_buttons = PowerButtons::new(width as f64, height as f64);
+    // Create power buttons (bottom-right corner of primary monitor)
+    let mut power_buttons = PowerButtons::new(
+        primary.x as f64,
+        primary.y as f64,
+        primary.width as f64,
+        primary.height as f64,
+    );
 
     // Create Pango context for text rendering
     let pango_ctx = pangocairo::functions::create_context(&renderer.context()?);

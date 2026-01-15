@@ -28,14 +28,19 @@ pub struct UserList {
 
 impl UserList {
     /// Create a new user list centered above the login form
-    pub fn new(users: Vec<UserInfo>, screen_width: f64, screen_height: f64) -> Self {
+    /// center_x, center_y is the center point of the primary monitor
+    pub fn new(users: Vec<UserInfo>, center_x: f64, center_y: f64) -> Self {
         let avatar_size = 64.0;
         let spacing = 24.0;
-        let total_width = users.len() as f64 * (avatar_size + spacing) - spacing;
+        let total_width = if users.is_empty() {
+            0.0
+        } else {
+            users.len() as f64 * (avatar_size + spacing) - spacing
+        };
 
-        // Center horizontally, position above center
-        let x = (screen_width - total_width) / 2.0;
-        let y = screen_height / 2.0 - 220.0; // Above the login form
+        // Center horizontally on primary monitor, position above center
+        let x = center_x - total_width / 2.0;
+        let y = center_y - 220.0; // Above the login form
 
         Self {
             users,

@@ -133,6 +133,16 @@ impl GreeterWindow {
         self.window
     }
 
+    /// Get the root window ID
+    pub fn root(&self) -> Window {
+        self.conn.setup().roots[self.screen_num].root
+    }
+
+    /// Get the screen number
+    pub fn screen_num(&self) -> usize {
+        self.screen_num
+    }
+
     /// Put an ARGB image to the window
     pub fn put_image(&self, data: &[u8]) -> Result<()> {
         self.conn

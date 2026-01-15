@@ -32,8 +32,8 @@ pub struct LoginForm {
 }
 
 impl LoginForm {
-    /// Create a new login form centered on the screen
-    pub fn new(screen_width: f64, screen_height: f64) -> Self {
+    /// Create a new login form centered at the specified point
+    pub fn new(center_x: f64, center_y: f64) -> Self {
         let width = 400.0;
         let height = 320.0;
 
@@ -45,8 +45,8 @@ impl LoginForm {
             info_message: None,
             is_loading: false,
             cursor_visible: true,
-            x: (screen_width - width) / 2.0,
-            y: (screen_height - height) / 2.0,
+            x: center_x - width / 2.0,
+            y: center_y - height / 2.0,
             width,
             height,
         }

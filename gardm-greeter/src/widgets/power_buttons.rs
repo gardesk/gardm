@@ -87,20 +87,19 @@ impl PowerButton {
 /// Power buttons panel
 pub struct PowerButtons {
     buttons: Vec<PowerButton>,
-    screen_width: f64,
-    screen_height: f64,
 }
 
 impl PowerButtons {
-    /// Create power buttons positioned in bottom-right corner
-    pub fn new(screen_width: f64, screen_height: f64) -> Self {
+    /// Create power buttons positioned in bottom-right corner of given area
+    /// For multi-monitor: pass the primary monitor's x, y, width, height
+    pub fn new(area_x: f64, area_y: f64, area_width: f64, area_height: f64) -> Self {
         let button_size = 48.0;
         let spacing = 12.0;
         let margin = 24.0;
 
-        // Position in bottom-right corner
-        let start_x = screen_width - margin - (button_size * 3.0 + spacing * 2.0);
-        let y = screen_height - margin - button_size;
+        // Position in bottom-right corner of the area
+        let start_x = area_x + area_width - margin - (button_size * 3.0 + spacing * 2.0);
+        let y = area_y + area_height - margin - button_size;
 
         let buttons = vec![
             PowerButton::new(PowerAction::Suspend, start_x, y, button_size),
@@ -118,11 +117,7 @@ impl PowerButtons {
             ),
         ];
 
-        Self {
-            buttons,
-            screen_width,
-            screen_height,
-        }
+        Self { buttons }
     }
 
     /// Render all power buttons
