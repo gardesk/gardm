@@ -3,8 +3,11 @@
 //! Graphical login UI that communicates with gardmd.
 
 mod background;
+mod config;
+mod garbg;
 mod keyboard;
 mod render;
+mod transition;
 mod widgets;
 mod window;
 
@@ -17,13 +20,13 @@ use x11rb::protocol::xproto::ConnectionExt;
 use x11rb::protocol::Event;
 
 use background::{load_blurred_background, render_to_cairo, solid_background};
+use config::GreeterConfig;
+use garbg::WallpaperResolver;
 use keyboard::{keycode_to_char, keycodes};
 use render::Renderer;
+use transition::{render_with_fade, FadeOutTransition};
 use widgets::{FocusedField, LoginForm};
 use window::GreeterWindow;
-
-/// Default background image path
-const DEFAULT_BACKGROUND: &str = "/usr/share/gardm/backgrounds/default.jpg";
 
 /// Cursor blink interval
 const CURSOR_BLINK_MS: u64 = 500;
@@ -38,6 +41,10 @@ async fn main() -> Result<()> {
 
     tracing::info!("gardm-greeter starting");
 
+    // Load configuration
+    let config = GreeterConfig::load().unwrap_or_default();
+    tracing::debug!(?config, "Greeter configuration");
+
     // Create X11 window
     let window = GreeterWindow::new().context("Failed to create window")?;
     let width = window.width();
@@ -47,16 +54,25 @@ async fn main() -> Result<()> {
     // Create renderer
     let mut renderer = Renderer::new(width, height).context("Failed to create renderer")?;
 
+    // Resolve wallpaper using garbg integration
+    let wallpaper_path = if config.garbg.enabled {
+        let resolver = WallpaperResolver::new(&config.garbg.fallback);
+        // Initially no username known, use system defaults
+        resolver.resolve(None)
+    } else {
+        config.garbg.fallback.clone()
+    };
+
     // Load background image (with fallback to solid color)
     let background = match load_blurred_background(
-        DEFAULT_BACKGROUND,
+        &wallpaper_path,
         width as u32,
         height as u32,
-        25.0, // blur radius
-        0.6,  // brightness (darken for contrast)
+        config.visual.blur_radius,
+        config.visual.brightness,
     ) {
         Ok(bg) => {
-            tracing::info!("Loaded background image");
+            tracing::info!(path = %wallpaper_path, "Loaded background image");
             bg
         }
         Err(e) => {
@@ -80,9 +96,10 @@ async fn main() -> Result<()> {
     tracing::debug!(?sessions, "Available sessions");
 
     // Get default session command
-    let default_session = sessions.first().map(|s| s.exec.clone()).unwrap_or_else(|| {
-        "gar-session.sh".to_string()
-    });
+    let default_session = sessions
+        .first()
+        .map(|s| s.exec.clone())
+        .unwrap_or_else(|| "gar-session.sh".to_string());
 
     // Create Pango context for text rendering
     let pango_ctx = pangocairo::functions::create_context(&renderer.context()?);
@@ -90,11 +107,24 @@ async fn main() -> Result<()> {
     // Timing for cursor blink
     let mut last_cursor_toggle = Instant::now();
 
+    // Fade transition (None until login succeeds)
+    let mut fade_transition: Option<FadeOutTransition> = None;
+
     // Main event loop
     tracing::info!("Entering main loop");
     loop {
-        // Toggle cursor blink
-        if last_cursor_toggle.elapsed() >= Duration::from_millis(CURSOR_BLINK_MS) {
+        // Check if fade transition is complete
+        if let Some(ref fade) = fade_transition {
+            if fade.is_complete() {
+                tracing::info!("Fade complete, exiting greeter");
+                std::process::exit(0);
+            }
+        }
+
+        // Toggle cursor blink (only when not fading)
+        if fade_transition.is_none()
+            && last_cursor_toggle.elapsed() >= Duration::from_millis(CURSOR_BLINK_MS)
+        {
             form.toggle_cursor();
             last_cursor_toggle = Instant::now();
         }
@@ -103,16 +133,27 @@ async fn main() -> Result<()> {
         {
             let ctx = renderer.context()?;
 
-            // Draw background
+            // Draw background (always full opacity)
             render_to_cairo(&ctx, &background)?;
 
-            // Draw login form
-            form.render(&ctx, &pango_ctx)?;
+            // Draw login form (with fade if transitioning)
+            let opacity = fade_transition
+                .as_ref()
+                .map(|f| f.opacity())
+                .unwrap_or(1.0);
+
+            render_with_fade(&ctx, opacity, |ctx| form.render(ctx, &pango_ctx))?;
         }
 
         // Copy rendered frame to X11 window
         let data = renderer.data()?;
         window.put_image(&data)?;
+
+        // Skip event handling during fade
+        if fade_transition.is_some() {
+            std::thread::sleep(Duration::from_millis(16));
+            continue;
+        }
 
         // Poll for X11 events (non-blocking)
         while let Some(event) = window.poll_for_event()? {
@@ -121,38 +162,45 @@ async fn main() -> Result<()> {
                     // Already rendering every frame
                 }
 
-                Event::KeyPress(e) => {
-                    match e.detail {
-                        keycodes::ESCAPE => {
-                            tracing::info!("Escape pressed, exiting");
-                            return Ok(());
-                        }
+                Event::KeyPress(e) => match e.detail {
+                    keycodes::ESCAPE => {
+                        tracing::info!("Escape pressed, exiting");
+                        return Ok(());
+                    }
 
-                        keycodes::RETURN => {
-                            if form.focused_field == FocusedField::Password && form.can_submit() {
-                                // Attempt login
-                                handle_login(&mut client, &mut form, &default_session).await?;
-                            } else if form.focused_field == FocusedField::Username {
-                                form.handle_tab();
+                    keycodes::RETURN => {
+                        if form.focused_field == FocusedField::Password && form.can_submit() {
+                            // Attempt login
+                            if let Some(fade) = handle_login(
+                                &mut client,
+                                &mut form,
+                                &default_session,
+                                config.visual.fade_duration_ms,
+                            )
+                            .await?
+                            {
+                                fade_transition = Some(fade);
                             }
-                        }
-
-                        keycodes::TAB => {
+                        } else if form.focused_field == FocusedField::Username {
                             form.handle_tab();
                         }
+                    }
 
-                        keycodes::BACKSPACE => {
-                            form.handle_backspace();
-                        }
+                    keycodes::TAB => {
+                        form.handle_tab();
+                    }
 
-                        _ => {
-                            // Regular character key
-                            if let Some(c) = keycode_to_char(e.detail, e.state) {
-                                form.handle_key(c);
-                            }
+                    keycodes::BACKSPACE => {
+                        form.handle_backspace();
+                    }
+
+                    _ => {
+                        // Regular character key
+                        if let Some(c) = keycode_to_char(e.detail, e.state) {
+                            form.handle_key(c);
                         }
                     }
-                }
+                },
 
                 Event::FocusOut(_) => {
                     // Regrab focus if we lose it
@@ -173,8 +221,13 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Handle login attempt
-async fn handle_login(client: &mut Client, form: &mut LoginForm, default_session: &str) -> Result<()> {
+/// Handle login attempt, returns fade transition if successful
+async fn handle_login(
+    client: &mut Client,
+    form: &mut LoginForm,
+    default_session: &str,
+    fade_duration_ms: u64,
+) -> Result<Option<FadeOutTransition>> {
     form.is_loading = true;
     form.clear_messages();
 
@@ -194,7 +247,7 @@ async fn handle_login(client: &mut Client, form: &mut LoginForm, default_session
             tracing::warn!(message, "Session creation failed");
             form.set_error(message);
             form.is_loading = false;
-            return Ok(());
+            return Ok(None);
         }
         _ => {}
     }
@@ -223,9 +276,10 @@ async fn handle_login(client: &mut Client, form: &mut LoginForm, default_session
 
             match response {
                 Response::Success => {
-                    tracing::info!("Session started, greeter will exit");
-                    // The daemon will kill us, but exit cleanly just in case
-                    std::process::exit(0);
+                    tracing::info!("Session started, beginning fade transition");
+                    form.is_loading = false;
+                    // Return fade transition - greeter will exit after fade completes
+                    return Ok(Some(FadeOutTransition::new(fade_duration_ms)));
                 }
                 Response::Error { message } => {
                     tracing::error!(message, "Failed to start session");
@@ -257,5 +311,5 @@ async fn handle_login(client: &mut Client, form: &mut LoginForm, default_session
     }
 
     form.is_loading = false;
-    Ok(())
+    Ok(None)
 }

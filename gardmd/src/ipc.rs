@@ -37,8 +37,9 @@ impl Server {
 
         let listener = UnixListener::bind(path)?;
 
-        // Set socket permissions (owner read/write only)
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        // Set socket permissions (world read/write for development)
+        // TODO: Tighten to 0o660 with gardm group in production
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666))?;
 
         tracing::info!("IPC server listening on {}", path.display());
 

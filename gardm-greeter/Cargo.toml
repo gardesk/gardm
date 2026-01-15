@@ -21,7 +21,11 @@ tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 rpassword = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
+nix = { workspace = true }
+shellexpand = { workspace = true }
 
 # X11 and graphics
 x11rb = { workspace = true }

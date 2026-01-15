@@ -44,3 +44,4 @@ gardm-ipc = { path = "gardm-ipc" }
 # CLI utilities
 clap = { version = "4.0", features = ["derive"] }
 rpassword = "7.0"
+shellexpand = "3.0"
