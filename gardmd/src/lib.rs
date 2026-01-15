@@ -6,6 +6,7 @@ pub mod auth;
 pub mod config;
 pub mod greeter;
 pub mod ipc;
+pub mod power;
 pub mod session;
 pub mod sessions;
 pub mod vt;

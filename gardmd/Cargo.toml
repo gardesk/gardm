@@ -25,3 +25,4 @@ x11rb = { workspace = true }
 clap = { workspace = true }
 libc = "0.2"
 sd-notify = "0.4"
+zbus = "4"

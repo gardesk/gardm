@@ -309,33 +309,41 @@ async fn handle_greeter_request(
 
         Request::Shutdown => {
             tracing::info!("Shutdown requested");
-            // TODO: Implement via logind
-            (
-                Response::Error {
-                    message: "Shutdown not yet implemented".to_string(),
-                },
-                None,
-            )
+            match gardmd::power::execute_async(gardmd::power::PowerAction::Shutdown).await {
+                Ok(()) => (Response::Success, None),
+                Err(e) => (
+                    Response::Error {
+                        message: format!("Shutdown failed: {}", e),
+                    },
+                    None,
+                ),
+            }
         }
 
         Request::Reboot => {
             tracing::info!("Reboot requested");
-            (
-                Response::Error {
-                    message: "Reboot not yet implemented".to_string(),
-                },
-                None,
-            )
+            match gardmd::power::execute_async(gardmd::power::PowerAction::Reboot).await {
+                Ok(()) => (Response::Success, None),
+                Err(e) => (
+                    Response::Error {
+                        message: format!("Reboot failed: {}", e),
+                    },
+                    None,
+                ),
+            }
         }
 
         Request::Suspend => {
             tracing::info!("Suspend requested");
-            (
-                Response::Error {
-                    message: "Suspend not yet implemented".to_string(),
-                },
-                None,
-            )
+            match gardmd::power::execute_async(gardmd::power::PowerAction::Suspend).await {
+                Ok(()) => (Response::Success, None),
+                Err(e) => (
+                    Response::Error {
+                        message: format!("Suspend failed: {}", e),
+                    },
+                    None,
+                ),
+            }
         }
 
         Request::ListSessions => {
