@@ -3,6 +3,7 @@
 //! Renders username/password fields, login button, and handles keyboard input.
 
 use crate::render::rounded_rectangle;
+use crate::theme::Theme;
 use anyhow::Result;
 use cairo::Context;
 use pango::{FontDescription, Layout, Weight};
@@ -53,19 +54,21 @@ impl LoginForm {
     }
 
     /// Render the login form
-    pub fn render(&self, ctx: &Context, pango_ctx: &pango::Context) -> Result<()> {
-        // Background panel (semi-transparent dark)
-        ctx.set_source_rgba(0.1, 0.1, 0.1, 0.85);
-        rounded_rectangle(ctx, self.x, self.y, self.width, self.height, 16.0);
+    pub fn render(&self, ctx: &Context, pango_ctx: &pango::Context, theme: &Theme) -> Result<()> {
+        // Background panel
+        let bg = &theme.panel_background;
+        ctx.set_source_rgba(bg.r, bg.g, bg.b, bg.a);
+        rounded_rectangle(ctx, self.x, self.y, self.width, self.height, theme.corner_radius);
         ctx.fill()?;
 
         // Title
-        self.render_title(ctx, pango_ctx)?;
+        self.render_title(ctx, pango_ctx, theme)?;
 
         // Username field
         self.render_input_field(
             ctx,
             pango_ctx,
+            theme,
             "Username",
             &self.username,
             self.y + 100.0,
@@ -77,6 +80,7 @@ impl LoginForm {
         self.render_input_field(
             ctx,
             pango_ctx,
+            theme,
             "Password",
             &masked_password,
             self.y + 170.0,
@@ -85,29 +89,32 @@ impl LoginForm {
 
         // Error message
         if let Some(ref msg) = self.error_message {
-            self.render_message(ctx, pango_ctx, msg, (1.0, 0.3, 0.3))?;
+            let c = &theme.text_error;
+            self.render_message(ctx, pango_ctx, theme, msg, (c.r, c.g, c.b))?;
         } else if let Some(ref msg) = self.info_message {
-            self.render_message(ctx, pango_ctx, msg, (0.7, 0.7, 0.7))?;
+            let c = &theme.text_info;
+            self.render_message(ctx, pango_ctx, theme, msg, (c.r, c.g, c.b))?;
         }
 
         // Login button
-        self.render_button(ctx, pango_ctx)?;
+        self.render_button(ctx, pango_ctx, theme)?;
 
         Ok(())
     }
 
-    fn render_title(&self, ctx: &Context, pango_ctx: &pango::Context) -> Result<()> {
+    fn render_title(&self, ctx: &Context, pango_ctx: &pango::Context, theme: &Theme) -> Result<()> {
         let layout = Layout::new(pango_ctx);
         let mut font = FontDescription::new();
-        font.set_family("Sans");
-        font.set_size(24 * pango::SCALE);
+        font.set_family(&theme.font_family);
+        font.set_size(theme.font_size_title * pango::SCALE);
         font.set_weight(Weight::Bold);
         layout.set_font_description(Some(&font));
         layout.set_text("Welcome");
 
         let (text_width, _) = layout.pixel_size();
 
-        ctx.set_source_rgb(1.0, 1.0, 1.0);
+        let c = &theme.text_primary;
+        ctx.set_source_rgb(c.r, c.g, c.b);
         ctx.move_to(
             self.x + (self.width - text_width as f64) / 2.0,
             self.y + 30.0,
@@ -121,6 +128,7 @@ impl LoginForm {
         &self,
         ctx: &Context,
         pango_ctx: &pango::Context,
+        theme: &Theme,
         label: &str,
         value: &str,
         y: f64,
@@ -132,37 +140,41 @@ impl LoginForm {
 
         // Label
         let mut font = FontDescription::new();
-        font.set_family("Sans");
+        font.set_family(&theme.font_family);
         font.set_size(11 * pango::SCALE);
 
         let label_layout = Layout::new(pango_ctx);
         label_layout.set_font_description(Some(&font));
         label_layout.set_text(label);
 
-        ctx.set_source_rgba(0.8, 0.8, 0.8, 1.0);
+        let c = &theme.text_secondary;
+        ctx.set_source_rgba(c.r, c.g, c.b, c.a);
         ctx.move_to(field_x, y - 18.0);
         pangocairo::functions::show_layout(ctx, &label_layout);
 
         // Input box background
-        if focused {
-            ctx.set_source_rgba(0.2, 0.4, 0.6, 1.0);
+        let bg = if focused {
+            &theme.input_background_focused
         } else {
-            ctx.set_source_rgba(0.25, 0.25, 0.25, 1.0);
-        }
+            &theme.input_background
+        };
+        ctx.set_source_rgba(bg.r, bg.g, bg.b, bg.a);
         rounded_rectangle(ctx, field_x, y, field_width, field_height, 8.0);
         ctx.fill()?;
 
-        // Input box border
+        // Input box border (focused only)
         if focused {
-            ctx.set_source_rgba(0.3, 0.6, 0.9, 1.0);
+            let bc = &theme.input_border;
+            ctx.set_source_rgba(bc.r, bc.g, bc.b, bc.a);
             rounded_rectangle(ctx, field_x, y, field_width, field_height, 8.0);
             ctx.set_line_width(2.0);
             ctx.stroke()?;
         }
 
         // Text value
-        ctx.set_source_rgb(1.0, 1.0, 1.0);
-        font.set_size(14 * pango::SCALE);
+        let tc = &theme.text_primary;
+        ctx.set_source_rgb(tc.r, tc.g, tc.b);
+        font.set_size(theme.font_size_normal * pango::SCALE);
         let value_layout = Layout::new(pango_ctx);
         value_layout.set_font_description(Some(&font));
         value_layout.set_text(if value.is_empty() { " " } else { value });
@@ -177,7 +189,7 @@ impl LoginForm {
             } else {
                 field_x + 12.0 + text_width as f64
             };
-            ctx.set_source_rgb(1.0, 1.0, 1.0);
+            ctx.set_source_rgb(tc.r, tc.g, tc.b);
             ctx.rectangle(cursor_x, y + 8.0, 2.0, 24.0);
             ctx.fill()?;
         }
@@ -189,13 +201,14 @@ impl LoginForm {
         &self,
         ctx: &Context,
         pango_ctx: &pango::Context,
+        theme: &Theme,
         msg: &str,
         color: (f64, f64, f64),
     ) -> Result<()> {
         ctx.set_source_rgb(color.0, color.1, color.2);
 
         let mut font = FontDescription::new();
-        font.set_family("Sans");
+        font.set_family(&theme.font_family);
         font.set_size(12 * pango::SCALE);
 
         let layout = Layout::new(pango_ctx);
@@ -209,26 +222,28 @@ impl LoginForm {
         Ok(())
     }
 
-    fn render_button(&self, ctx: &Context, pango_ctx: &pango::Context) -> Result<()> {
+    fn render_button(&self, ctx: &Context, pango_ctx: &pango::Context, theme: &Theme) -> Result<()> {
         let btn_width = 120.0;
         let btn_height = 36.0;
         let btn_x = self.x + (self.width - btn_width) / 2.0;
         let btn_y = self.y + 275.0;
 
         // Button background
-        if self.is_loading {
-            ctx.set_source_rgba(0.3, 0.3, 0.3, 1.0);
+        let bg = if self.is_loading {
+            &theme.button_background_disabled
         } else {
-            ctx.set_source_rgba(0.2, 0.5, 0.8, 1.0);
-        }
+            &theme.button_background
+        };
+        ctx.set_source_rgba(bg.r, bg.g, bg.b, bg.a);
         rounded_rectangle(ctx, btn_x, btn_y, btn_width, btn_height, 8.0);
         ctx.fill()?;
 
         // Button text
-        ctx.set_source_rgb(1.0, 1.0, 1.0);
+        let tc = &theme.text_primary;
+        ctx.set_source_rgb(tc.r, tc.g, tc.b);
         let mut font = FontDescription::new();
-        font.set_family("Sans");
-        font.set_size(14 * pango::SCALE);
+        font.set_family(&theme.font_family);
+        font.set_size(theme.font_size_normal * pango::SCALE);
         font.set_weight(Weight::Bold);
 
         let layout = Layout::new(pango_ctx);

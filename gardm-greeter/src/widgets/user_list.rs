@@ -7,6 +7,7 @@ use crate::avatar::{
     string_to_hue, AvatarCache,
 };
 use crate::render::rounded_rectangle;
+use crate::theme::Theme;
 use anyhow::Result;
 use cairo::Context;
 use gardm_ipc::UserInfo;
@@ -79,7 +80,7 @@ impl UserList {
     }
 
     /// Render the user list
-    pub fn render(&mut self, ctx: &Context, pango_ctx: &pango::Context) -> Result<()> {
+    pub fn render(&mut self, ctx: &Context, pango_ctx: &pango::Context, theme: &Theme) -> Result<()> {
         if self.users.is_empty() {
             return Ok(());
         }
@@ -100,11 +101,12 @@ impl UserList {
                 let bg_h = self.avatar_size + 28.0 + bg_padding * 2.0; // Include name
 
                 if is_selected {
-                    ctx.set_source_rgba(0.3, 0.5, 0.8, 0.3);
+                    let ac = &theme.accent;
+                    ctx.set_source_rgba(ac.r, ac.g, ac.b, 0.3);
                 } else {
                     ctx.set_source_rgba(1.0, 1.0, 1.0, 0.1);
                 }
-                rounded_rectangle(ctx, bg_x, bg_y, bg_w, bg_h, 12.0);
+                rounded_rectangle(ctx, bg_x, bg_y, bg_w, bg_h, theme.corner_radius * 0.75);
                 ctx.fill()?;
             }
 
@@ -125,7 +127,7 @@ impl UserList {
 
             // Username below avatar
             let mut font = FontDescription::new();
-            font.set_family("Sans");
+            font.set_family(&theme.font_family);
             font.set_size(11 * pango::SCALE);
 
             let layout = Layout::new(pango_ctx);
@@ -143,10 +145,11 @@ impl UserList {
             let text_x = item_x + (self.avatar_size - text_w as f64) / 2.0;
             let text_y = item_y + self.avatar_size + 8.0;
 
+            let tc = &theme.text_primary;
             if is_selected {
-                ctx.set_source_rgb(1.0, 1.0, 1.0);
+                ctx.set_source_rgb(tc.r, tc.g, tc.b);
             } else {
-                ctx.set_source_rgba(0.9, 0.9, 0.9, 0.9);
+                ctx.set_source_rgba(tc.r, tc.g, tc.b, 0.9);
             }
             ctx.move_to(text_x, text_y);
             pangocairo::functions::show_layout(ctx, &layout);

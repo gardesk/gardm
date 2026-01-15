@@ -1,7 +1,8 @@
 //! Greeter configuration
 //!
-//! Loads visual settings and garbg integration options.
+//! Loads visual settings, theming, and accessibility options.
 
+use crate::theme::{AccessibilityConfig, Theme, ThemeConfig};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -13,6 +14,10 @@ pub struct GreeterConfig {
     pub visual: VisualConfig,
     #[serde(default)]
     pub garbg: GarbgIntegration,
+    #[serde(default)]
+    pub theme: ThemeConfig,
+    #[serde(default)]
+    pub accessibility: AccessibilityConfig,
 }
 
 /// Visual appearance settings
@@ -109,5 +114,19 @@ impl GreeterConfig {
         // Use defaults
         tracing::debug!("No config file found, using defaults");
         Ok(Self::default())
+    }
+
+    /// Build the theme from config, applying accessibility options
+    pub fn build_theme(&self) -> Theme {
+        self.theme.clone().into_theme(&self.accessibility)
+    }
+
+    /// Get effective fade duration (0 if reduce_motion is enabled)
+    pub fn effective_fade_duration(&self) -> u64 {
+        if self.accessibility.reduce_motion {
+            0
+        } else {
+            self.visual.fade_duration_ms
+        }
     }
 }

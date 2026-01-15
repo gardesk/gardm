@@ -10,6 +10,7 @@ mod icons;
 mod keyboard;
 mod monitors;
 mod render;
+mod theme;
 mod transition;
 mod widgets;
 mod window;
@@ -48,6 +49,15 @@ async fn main() -> Result<()> {
     // Load configuration
     let config = GreeterConfig::load().unwrap_or_default();
     tracing::debug!(?config, "Greeter configuration");
+
+    // Build theme from config with accessibility options
+    let theme = config.build_theme();
+    tracing::debug!(
+        high_contrast = config.accessibility.high_contrast,
+        large_text = config.accessibility.large_text,
+        reduce_motion = config.accessibility.reduce_motion,
+        "Theme built"
+    );
 
     // Create X11 window
     let window = GreeterWindow::new().context("Failed to create window")?;
@@ -197,13 +207,13 @@ async fn main() -> Result<()> {
 
             render_with_fade(&ctx, opacity, |ctx| {
                 // User list (above login form)
-                user_list.render(ctx, &pango_ctx)?;
+                user_list.render(ctx, &pango_ctx, &theme)?;
 
                 // Login form
-                form.render(ctx, &pango_ctx)?;
+                form.render(ctx, &pango_ctx, &theme)?;
 
                 // Session selector
-                session_selector.render(ctx, &pango_ctx)?;
+                session_selector.render(ctx, &pango_ctx, &theme)?;
 
                 // Power buttons
                 power_buttons.render(ctx)?;
@@ -297,7 +307,7 @@ async fn main() -> Result<()> {
                                     &mut client,
                                     &mut form,
                                     &session_exec,
-                                    config.visual.fade_duration_ms,
+                                    config.effective_fade_duration(),
                                 )
                                 .await?
                                 {

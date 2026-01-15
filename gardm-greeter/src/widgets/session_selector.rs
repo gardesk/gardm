@@ -4,6 +4,7 @@
 
 use crate::icons;
 use crate::render::rounded_rectangle;
+use crate::theme::Theme;
 use anyhow::Result;
 use cairo::Context;
 use gardm_ipc::SessionInfo;
@@ -68,21 +69,22 @@ impl SessionSelector {
     }
 
     /// Render the session selector
-    pub fn render(&self, ctx: &Context, pango_ctx: &pango::Context) -> Result<()> {
+    pub fn render(&self, ctx: &Context, pango_ctx: &pango::Context, theme: &Theme) -> Result<()> {
         // Main button (always visible)
-        self.render_button(ctx, pango_ctx)?;
+        self.render_button(ctx, pango_ctx, theme)?;
 
         // Dropdown list (when expanded)
         if self.expanded && !self.sessions.is_empty() {
-            self.render_dropdown(ctx, pango_ctx)?;
+            self.render_dropdown(ctx, pango_ctx, theme)?;
         }
 
         Ok(())
     }
 
-    fn render_button(&self, ctx: &Context, pango_ctx: &pango::Context) -> Result<()> {
+    fn render_button(&self, ctx: &Context, pango_ctx: &pango::Context, theme: &Theme) -> Result<()> {
         // Background
-        ctx.set_source_rgba(0.2, 0.2, 0.2, 0.9);
+        let bg = &theme.input_background;
+        ctx.set_source_rgba(bg.r, bg.g, bg.b, 0.9);
         rounded_rectangle(ctx, self.x, self.y, self.width, self.item_height, 8.0);
         ctx.fill()?;
 
@@ -99,14 +101,15 @@ impl SessionSelector {
             .unwrap_or("No sessions");
 
         let mut font = FontDescription::new();
-        font.set_family("Sans");
+        font.set_family(&theme.font_family);
         font.set_size(13 * pango::SCALE);
 
         let layout = Layout::new(pango_ctx);
         layout.set_font_description(Some(&font));
         layout.set_text(name);
 
-        ctx.set_source_rgb(1.0, 1.0, 1.0);
+        let tc = &theme.text_primary;
+        ctx.set_source_rgb(tc.r, tc.g, tc.b);
         ctx.move_to(self.x + 12.0, self.y + (self.item_height - 16.0) / 2.0);
         pangocairo::functions::show_layout(ctx, &layout);
 
@@ -114,18 +117,20 @@ impl SessionSelector {
         let chevron_size = 16.0;
         let chevron_x = self.x + self.width - chevron_size - 12.0;
         let chevron_y = self.y + (self.item_height - chevron_size) / 2.0;
-        ctx.set_source_rgba(0.7, 0.7, 0.7, 1.0);
+        let sc = &theme.text_secondary;
+        ctx.set_source_rgba(sc.r, sc.g, sc.b, sc.a);
         icons::draw_chevron_down(ctx, chevron_x, chevron_y, chevron_size);
 
         Ok(())
     }
 
-    fn render_dropdown(&self, ctx: &Context, pango_ctx: &pango::Context) -> Result<()> {
+    fn render_dropdown(&self, ctx: &Context, pango_ctx: &pango::Context, theme: &Theme) -> Result<()> {
         let dropdown_height = self.sessions.len() as f64 * self.item_height;
         let dropdown_y = self.y - dropdown_height - 4.0; // Above the button
 
         // Dropdown background
-        ctx.set_source_rgba(0.15, 0.15, 0.15, 0.95);
+        let bg = &theme.panel_background;
+        ctx.set_source_rgba(bg.r * 0.8, bg.g * 0.8, bg.b * 0.8, 0.95);
         rounded_rectangle(ctx, self.x, dropdown_y, self.width, dropdown_height, 8.0);
         ctx.fill()?;
 
@@ -137,7 +142,7 @@ impl SessionSelector {
 
         // Items
         let mut font = FontDescription::new();
-        font.set_family("Sans");
+        font.set_family(&theme.font_family);
         font.set_size(13 * pango::SCALE);
 
         for (i, session) in self.sessions.iter().enumerate() {
@@ -147,7 +152,8 @@ impl SessionSelector {
 
             // Item background on hover
             if is_hovered {
-                ctx.set_source_rgba(0.3, 0.5, 0.8, 0.5);
+                let ac = &theme.accent;
+                ctx.set_source_rgba(ac.r, ac.g, ac.b, 0.5);
                 if i == 0 {
                     // First item - round top corners
                     rounded_rectangle(ctx, self.x + 2.0, item_y + 2.0, self.width - 4.0, self.item_height - 2.0, 6.0);
@@ -171,10 +177,11 @@ impl SessionSelector {
             layout.set_font_description(Some(&font));
             layout.set_text(&session.name);
 
+            let tc = &theme.text_primary;
             if is_selected {
-                ctx.set_source_rgb(1.0, 1.0, 1.0);
+                ctx.set_source_rgb(tc.r, tc.g, tc.b);
             } else {
-                ctx.set_source_rgba(0.9, 0.9, 0.9, 1.0);
+                ctx.set_source_rgba(tc.r, tc.g, tc.b, 0.9);
             }
             ctx.move_to(self.x + 36.0, item_y + (self.item_height - 16.0) / 2.0);
             pangocairo::functions::show_layout(ctx, &layout);
