@@ -2,6 +2,7 @@
 //!
 //! Graphical login UI that communicates with gardmd.
 
+mod avatar;
 mod background;
 mod config;
 mod garbg;
@@ -26,7 +27,7 @@ use garbg::WallpaperResolver;
 use keyboard::{keycode_to_char, keycodes};
 use render::Renderer;
 use transition::{render_with_fade, FadeOutTransition};
-use widgets::{FocusedField, LoginForm, PowerAction, PowerButtons, SessionSelector};
+use widgets::{FocusedField, LoginForm, PowerAction, PowerButtons, SessionSelector, UserList};
 use window::GreeterWindow;
 
 /// Cursor blink interval
@@ -95,6 +96,16 @@ async fn main() -> Result<()> {
     };
     tracing::debug!(?sessions, "Available sessions");
 
+    // Fetch available users
+    let users = match client.request(&Request::ListUsers).await? {
+        Response::Users { users } => users,
+        _ => Vec::new(),
+    };
+    tracing::debug!(count = users.len(), "Available users");
+
+    // Create user list (above login form)
+    let mut user_list = UserList::new(users, width as f64, height as f64);
+
     // Create session selector (positioned below login form)
     let selector_width = 200.0;
     let selector_x = (width as f64 - selector_width) / 2.0;
@@ -150,6 +161,9 @@ async fn main() -> Result<()> {
                 .unwrap_or(1.0);
 
             render_with_fade(&ctx, opacity, |ctx| {
+                // User list (above login form)
+                user_list.render(ctx, &pango_ctx)?;
+
                 // Login form
                 form.render(ctx, &pango_ctx)?;
 
@@ -187,14 +201,23 @@ async fn main() -> Result<()> {
                     // Update hover states
                     power_buttons.update_hover(mouse_x, mouse_y);
                     session_selector.update_hover(mouse_x, mouse_y);
+                    user_list.update_hover(mouse_x, mouse_y);
                 }
 
                 Event::ButtonPress(e) => {
                     let click_x = e.event_x as f64;
                     let click_y = e.event_y as f64;
 
+                    // Check user list clicks first
+                    if let Some(username) = user_list.handle_click(click_x, click_y) {
+                        tracing::info!(username, "User selected from list");
+                        form.username = username;
+                        form.password.clear();
+                        form.focused_field = FocusedField::Password;
+                        form.clear_messages();
+                    }
                     // Check power buttons
-                    if let Some(action) = power_buttons.handle_click(click_x, click_y) {
+                    else if let Some(action) = power_buttons.handle_click(click_x, click_y) {
                         handle_power_action(&mut client, action).await?;
                     }
                     // Check session selector
