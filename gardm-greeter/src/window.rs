@@ -52,6 +52,7 @@ impl GreeterWindow {
                         | EventMask::KEY_RELEASE
                         | EventMask::BUTTON_PRESS
                         | EventMask::BUTTON_RELEASE
+                        | EventMask::POINTER_MOTION
                         | EventMask::STRUCTURE_NOTIFY
                         | EventMask::FOCUS_CHANGE,
                 ),

@@ -5,6 +5,7 @@
 mod background;
 mod config;
 mod garbg;
+mod icons;
 mod keyboard;
 mod render;
 mod transition;
@@ -25,7 +26,7 @@ use garbg::WallpaperResolver;
 use keyboard::{keycode_to_char, keycodes};
 use render::Renderer;
 use transition::{render_with_fade, FadeOutTransition};
-use widgets::{FocusedField, LoginForm};
+use widgets::{FocusedField, LoginForm, PowerAction, PowerButtons, SessionSelector};
 use window::GreeterWindow;
 
 /// Cursor blink interval
@@ -57,7 +58,6 @@ async fn main() -> Result<()> {
     // Resolve wallpaper using garbg integration
     let wallpaper_path = if config.garbg.enabled {
         let resolver = WallpaperResolver::new(&config.garbg.fallback);
-        // Initially no username known, use system defaults
         resolver.resolve(None)
     } else {
         config.garbg.fallback.clone()
@@ -95,11 +95,14 @@ async fn main() -> Result<()> {
     };
     tracing::debug!(?sessions, "Available sessions");
 
-    // Get default session command
-    let default_session = sessions
-        .first()
-        .map(|s| s.exec.clone())
-        .unwrap_or_else(|| "gar-session.sh".to_string());
+    // Create session selector (positioned below login form)
+    let selector_width = 200.0;
+    let selector_x = (width as f64 - selector_width) / 2.0;
+    let selector_y = height as f64 / 2.0 + 180.0; // Below the login form
+    let mut session_selector = SessionSelector::new(sessions, selector_x, selector_y, selector_width);
+
+    // Create power buttons (bottom-right corner)
+    let mut power_buttons = PowerButtons::new(width as f64, height as f64);
 
     // Create Pango context for text rendering
     let pango_ctx = pangocairo::functions::create_context(&renderer.context()?);
@@ -109,6 +112,10 @@ async fn main() -> Result<()> {
 
     // Fade transition (None until login succeeds)
     let mut fade_transition: Option<FadeOutTransition> = None;
+
+    // Mouse position tracking
+    let mut mouse_x: f64 = 0.0;
+    let mut mouse_y: f64 = 0.0;
 
     // Main event loop
     tracing::info!("Entering main loop");
@@ -136,13 +143,24 @@ async fn main() -> Result<()> {
             // Draw background (always full opacity)
             render_to_cairo(&ctx, &background)?;
 
-            // Draw login form (with fade if transitioning)
+            // Draw UI elements (with fade if transitioning)
             let opacity = fade_transition
                 .as_ref()
                 .map(|f| f.opacity())
                 .unwrap_or(1.0);
 
-            render_with_fade(&ctx, opacity, |ctx| form.render(ctx, &pango_ctx))?;
+            render_with_fade(&ctx, opacity, |ctx| {
+                // Login form
+                form.render(ctx, &pango_ctx)?;
+
+                // Session selector
+                session_selector.render(ctx, &pango_ctx)?;
+
+                // Power buttons
+                power_buttons.render(ctx)?;
+
+                Ok(())
+            })?;
         }
 
         // Copy rendered frame to X11 window
@@ -162,45 +180,92 @@ async fn main() -> Result<()> {
                     // Already rendering every frame
                 }
 
-                Event::KeyPress(e) => match e.detail {
-                    keycodes::ESCAPE => {
-                        tracing::info!("Escape pressed, exiting");
-                        return Ok(());
+                Event::MotionNotify(e) => {
+                    mouse_x = e.event_x as f64;
+                    mouse_y = e.event_y as f64;
+
+                    // Update hover states
+                    power_buttons.update_hover(mouse_x, mouse_y);
+                    session_selector.update_hover(mouse_x, mouse_y);
+                }
+
+                Event::ButtonPress(e) => {
+                    let click_x = e.event_x as f64;
+                    let click_y = e.event_y as f64;
+
+                    // Check power buttons
+                    if let Some(action) = power_buttons.handle_click(click_x, click_y) {
+                        handle_power_action(&mut client, action).await?;
+                    }
+                    // Check session selector
+                    else if session_selector.button_contains(click_x, click_y) {
+                        session_selector.toggle();
+                    } else if session_selector.is_expanded() {
+                        if session_selector.handle_dropdown_click(click_x, click_y) {
+                            // Selection made
+                            tracing::info!(
+                                session = ?session_selector.selected(),
+                                "Session selected"
+                            );
+                        } else if !session_selector.contains(click_x, click_y) {
+                            // Click outside dropdown - close it
+                            session_selector.close();
+                        }
+                    }
+                }
+
+                Event::KeyPress(e) => {
+                    // Close dropdown on any key press
+                    if session_selector.is_expanded() {
+                        session_selector.close();
                     }
 
-                    keycodes::RETURN => {
-                        if form.focused_field == FocusedField::Password && form.can_submit() {
-                            // Attempt login
-                            if let Some(fade) = handle_login(
-                                &mut client,
-                                &mut form,
-                                &default_session,
-                                config.visual.fade_duration_ms,
-                            )
-                            .await?
-                            {
-                                fade_transition = Some(fade);
+                    match e.detail {
+                        keycodes::ESCAPE => {
+                            tracing::info!("Escape pressed, exiting");
+                            return Ok(());
+                        }
+
+                        keycodes::RETURN => {
+                            if form.focused_field == FocusedField::Password && form.can_submit() {
+                                // Get selected session exec command
+                                let session_exec = session_selector
+                                    .selected_exec()
+                                    .unwrap_or("gar-session.sh")
+                                    .to_string();
+
+                                // Attempt login
+                                if let Some(fade) = handle_login(
+                                    &mut client,
+                                    &mut form,
+                                    &session_exec,
+                                    config.visual.fade_duration_ms,
+                                )
+                                .await?
+                                {
+                                    fade_transition = Some(fade);
+                                }
+                            } else if form.focused_field == FocusedField::Username {
+                                form.handle_tab();
                             }
-                        } else if form.focused_field == FocusedField::Username {
+                        }
+
+                        keycodes::TAB => {
                             form.handle_tab();
                         }
-                    }
 
-                    keycodes::TAB => {
-                        form.handle_tab();
-                    }
+                        keycodes::BACKSPACE => {
+                            form.handle_backspace();
+                        }
 
-                    keycodes::BACKSPACE => {
-                        form.handle_backspace();
-                    }
-
-                    _ => {
-                        // Regular character key
-                        if let Some(c) = keycode_to_char(e.detail, e.state) {
-                            form.handle_key(c);
+                        _ => {
+                            // Regular character key
+                            if let Some(c) = keycode_to_char(e.detail, e.state) {
+                                form.handle_key(c);
+                            }
                         }
                     }
-                },
+                }
 
                 Event::FocusOut(_) => {
                     // Regrab focus if we lose it
@@ -221,11 +286,42 @@ async fn main() -> Result<()> {
     }
 }
 
+/// Handle power button action
+async fn handle_power_action(client: &mut Client, action: PowerAction) -> Result<()> {
+    let request = match action {
+        PowerAction::Shutdown => {
+            tracing::info!("Shutdown requested");
+            Request::Shutdown
+        }
+        PowerAction::Reboot => {
+            tracing::info!("Reboot requested");
+            Request::Reboot
+        }
+        PowerAction::Suspend => {
+            tracing::info!("Suspend requested");
+            Request::Suspend
+        }
+    };
+
+    match client.request(&request).await? {
+        Response::Success => {
+            tracing::info!("Power action succeeded");
+        }
+        Response::Error { message } => {
+            tracing::warn!(message, "Power action failed");
+            // TODO: Show error in UI
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
 /// Handle login attempt, returns fade transition if successful
 async fn handle_login(
     client: &mut Client,
     form: &mut LoginForm,
-    default_session: &str,
+    session_exec: &str,
     fade_duration_ms: u64,
 ) -> Result<Option<FadeOutTransition>> {
     form.is_loading = true;
@@ -265,8 +361,10 @@ async fn handle_login(
             tracing::info!("Authentication successful");
             form.set_info("Starting session...".to_string());
 
-            // Start session
-            let session_cmd = vec![default_session.to_string()];
+            // Start session with selected session command
+            let session_cmd = vec![session_exec.to_string()];
+            tracing::info!(?session_cmd, "Starting session");
+
             let response = client
                 .request(&Request::StartSession {
                     cmd: session_cmd,
@@ -278,7 +376,6 @@ async fn handle_login(
                 Response::Success => {
                     tracing::info!("Session started, beginning fade transition");
                     form.is_loading = false;
-                    // Return fade transition - greeter will exit after fade completes
                     return Ok(Some(FadeOutTransition::new(fade_duration_ms)));
                 }
                 Response::Error { message } => {
@@ -296,7 +393,6 @@ async fn handle_login(
             form.clear_password();
         }
         Response::AuthPrompt { prompt, .. } => {
-            // PAM wants more input (e.g., OTP)
             form.set_info(prompt);
         }
         Response::AuthInfo { message } => {
