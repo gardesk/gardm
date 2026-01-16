@@ -299,10 +299,14 @@ async fn main() -> Result<()> {
                     }
                     // Check login button click
                     else if form.button_contains(click_x, click_y) && form.can_submit() {
-                        // Get selected session exec command
+                        // Get selected session exec command and type
                         let session_exec = session_selector
                             .selected_exec()
                             .unwrap_or("gar-session.sh")
+                            .to_string();
+                        let session_type = session_selector
+                            .selected_type()
+                            .unwrap_or("x11")
                             .to_string();
 
                         // Attempt login
@@ -310,6 +314,7 @@ async fn main() -> Result<()> {
                             &mut client,
                             &mut form,
                             &session_exec,
+                            &session_type,
                             config.effective_fade_duration(),
                         )
                         .await?
@@ -352,10 +357,14 @@ async fn main() -> Result<()> {
 
                         keycodes::RETURN => {
                             if form.focused_field == FocusedField::Password && form.can_submit() {
-                                // Get selected session exec command
+                                // Get selected session exec command and type
                                 let session_exec = session_selector
                                     .selected_exec()
                                     .unwrap_or("gar-session.sh")
+                                    .to_string();
+                                let session_type = session_selector
+                                    .selected_type()
+                                    .unwrap_or("x11")
                                     .to_string();
 
                                 // Attempt login
@@ -363,6 +372,7 @@ async fn main() -> Result<()> {
                                     &mut client,
                                     &mut form,
                                     &session_exec,
+                                    &session_type,
                                     config.effective_fade_duration(),
                                 )
                                 .await?
@@ -475,6 +485,7 @@ async fn handle_login(
     client: &mut Client,
     form: &mut LoginForm,
     session_exec: &str,
+    session_type: &str,
     fade_duration_ms: u64,
 ) -> Result<Option<FadeOutTransition>> {
     form.is_loading = true;
@@ -516,11 +527,12 @@ async fn handle_login(
 
             // Start session with selected session command
             let session_cmd = vec![session_exec.to_string()];
-            tracing::info!(?session_cmd, "Starting session");
+            tracing::info!(?session_cmd, %session_type, "Starting session");
 
             let response = client
                 .request(&Request::StartSession {
                     cmd: session_cmd,
+                    session_type: session_type.to_string(),
                     env: vec![],
                 })
                 .await?;
