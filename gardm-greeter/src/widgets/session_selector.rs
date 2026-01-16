@@ -49,6 +49,11 @@ impl SessionSelector {
         self.selected().map(|s| s.exec.as_str())
     }
 
+    /// Get the session type for the selected session ("x11" or "wayland")
+    pub fn selected_type(&self) -> Option<&str> {
+        self.selected().map(|s| s.session_type.as_str())
+    }
+
     /// Check if dropdown is expanded
     pub fn is_expanded(&self) -> bool {
         self.expanded
