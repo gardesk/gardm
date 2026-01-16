@@ -88,6 +88,17 @@ fn default_true() -> bool {
     true
 }
 fn default_fallback() -> String {
+    // Try common locations for a default wallpaper
+    let candidates = [
+        "/home/mfwolffe/Pictures/background/cold/a_snowy_mountain_with_clouds_above.jpg",
+        "/usr/share/backgrounds/default.png",
+        "/usr/share/gardm/backgrounds/default.jpg",
+    ];
+    for path in candidates {
+        if std::path::Path::new(path).exists() {
+            return path.to_string();
+        }
+    }
     "/usr/share/gardm/backgrounds/default.jpg".to_string()
 }
 
