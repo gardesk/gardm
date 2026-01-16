@@ -20,7 +20,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 nix = { workspace = true }
-pam-client = { workspace = true }
+pam = "0.8"
 x11rb = { workspace = true }
 clap = { workspace = true }
 libc = "0.2"

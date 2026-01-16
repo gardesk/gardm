@@ -3,8 +3,8 @@
 //! Implements a state machine for PAM-based authentication with
 //! proper conversation handling for the greeter.
 
-use anyhow::{Context, Result};
-use pam_client::{Context as PamContext, Flag};
+use anyhow::{anyhow, Result};
+use pam::Client;
 
 /// Service name for PAM configuration
 const PAM_SERVICE: &str = "gardm";
@@ -146,23 +146,32 @@ impl AuthSession {
 
 /// Perform PAM authentication (blocking)
 fn pam_authenticate(username: &str, password: &str) -> Result<()> {
-    use pam_client::conv_mock::Conversation;
+    tracing::debug!(%username, password_len = password.len(), "Starting PAM authentication");
 
-    // Create conversation handler that provides the password
-    let conv = Conversation::with_credentials(username, password);
+    // Create client with PasswordConv (non-interactive, uses provided password)
+    let mut client = Client::with_password(PAM_SERVICE)
+        .map_err(|e| anyhow!("Failed to create PAM client: {:?}", e))?;
 
-    // Create PAM context
-    let mut ctx = PamContext::new(PAM_SERVICE, Some(username), conv)
-        .context("Failed to create PAM context")?;
+    // Set the credentials
+    client
+        .conversation_mut()
+        .set_credentials(username, password);
+
+    tracing::debug!("PAM client created, calling authenticate");
 
     // Authenticate
-    ctx.authenticate(Flag::NONE)
-        .context("PAM authentication failed")?;
+    client
+        .authenticate()
+        .map_err(|e| anyhow!("PAM authentication failed: {:?}", e))?;
 
-    // Validate account (check expiry, etc.)
-    ctx.acct_mgmt(Flag::NONE)
-        .context("Account validation failed")?;
+    tracing::debug!("PAM authenticate succeeded, opening session");
 
+    // Open session (also does account validation)
+    client
+        .open_session()
+        .map_err(|e| anyhow!("Failed to open PAM session: {:?}", e))?;
+
+    tracing::debug!("PAM session opened successfully");
     Ok(())
 }
 

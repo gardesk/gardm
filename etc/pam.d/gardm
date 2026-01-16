@@ -1,23 +1,17 @@
 #%PAM-1.0
-# PAM configuration for gardm display manager
-# Based on SDDM's Fedora configuration
+# gardm display manager PAM configuration
 
-# SELinux permit (Fedora-specific)
-auth     [success=done ignore=ignore default=bad] pam_selinux_permit.so
-auth        substack      password-auth
--auth       optional      pam_gnome_keyring.so
-auth        include       postlogin
+# Authentication
+auth        required      pam_unix.so
 
-account     required      pam_nologin.so
-account     include       password-auth
+# Account management
+account     required      pam_unix.so
 
-password    include       password-auth
+# Password management
+password    required      pam_unix.so
 
-session     required      pam_selinux.so close
-session     required      pam_loginuid.so
-session     required      pam_selinux.so open
-session     optional      pam_keyinit.so force revoke
-session     required      pam_namespace.so
-session     include       password-auth
--session    optional      pam_gnome_keyring.so auto_start
-session     include       postlogin
+# Session management - pam_systemd creates /run/user/<uid>/ and registers session
+# Note: pam_loginuid is intentionally omitted - it can only be set once per process
+# and gardmd runs as a persistent daemon
+-session    optional      pam_systemd.so
+session     required      pam_unix.so
