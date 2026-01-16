@@ -6,7 +6,6 @@ use crate::avatar::{
     get_initials, render_avatar_border, render_avatar_fallback, render_avatar_image,
     string_to_hue, AvatarCache,
 };
-use crate::render::rounded_rectangle;
 use crate::theme::Theme;
 use anyhow::Result;
 use cairo::Context;
@@ -40,8 +39,11 @@ impl UserList {
         };
 
         // Center horizontally on primary monitor, position above center
+        // Login form is 320px tall, centered, so top is at center_y - 160
+        // Avatar (64px) + gap (8px) + name text (~20px) = ~92px
+        // Need enough clearance above the login form
         let x = center_x - total_width / 2.0;
-        let y = center_y - 220.0; // Above the login form
+        let y = center_y - 280.0; // Above the login form with breathing room
 
         Self {
             users,
@@ -58,6 +60,16 @@ impl UserList {
     /// Check if the user list has any users
     pub fn is_empty(&self) -> bool {
         self.users.is_empty()
+    }
+
+    /// Select the first user and return their username
+    pub fn select_first(&mut self) -> Option<String> {
+        if self.users.is_empty() {
+            None
+        } else {
+            self.selected_index = Some(0);
+            Some(self.users[0].name.clone())
+        }
     }
 
     /// Get the selected user's username
@@ -90,25 +102,6 @@ impl UserList {
             let item_y = self.y;
 
             let is_selected = self.selected_index == Some(i);
-            let is_hovered = self.hovered_index == Some(i);
-
-            // Hover/selection background
-            if is_hovered || is_selected {
-                let bg_padding = 8.0;
-                let bg_x = item_x - bg_padding;
-                let bg_y = item_y - bg_padding;
-                let bg_w = self.avatar_size + bg_padding * 2.0;
-                let bg_h = self.avatar_size + 28.0 + bg_padding * 2.0; // Include name
-
-                if is_selected {
-                    let ac = &theme.accent;
-                    ctx.set_source_rgba(ac.r, ac.g, ac.b, 0.3);
-                } else {
-                    ctx.set_source_rgba(1.0, 1.0, 1.0, 0.1);
-                }
-                rounded_rectangle(ctx, bg_x, bg_y, bg_w, bg_h, theme.corner_radius * 0.75);
-                ctx.fill()?;
-            }
 
             // Avatar
             let home = user.home.to_str();

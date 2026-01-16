@@ -25,10 +25,9 @@ pub fn draw_power(ctx: &Context, x: f64, y: f64, size: f64) {
     ctx.arc(cx, cy, radius, PI / 2.0 + gap_angle, 5.0 * PI / 2.0 - gap_angle);
     ctx.stroke().ok();
 
-    // Vertical line at top
-    let line_length = 8.0 * scale;
-    ctx.move_to(cx, cy - radius + stroke_width);
-    ctx.line_to(cx, cy - radius + stroke_width - line_length);
+    // Vertical line from top (outside) going down toward center
+    ctx.move_to(cx, cy - radius - stroke_width); // Start above the circle gap
+    ctx.line_to(cx, cy);                         // Go down to center
     ctx.stroke().ok();
 }
 

@@ -166,4 +166,13 @@ impl PowerButtons {
             .find(|b| b.hovered)
             .map(|b| b.action)
     }
+
+    /// Get the hovered button info for tooltip rendering (action, center_x, top_y)
+    pub fn hovered_tooltip_info(&self) -> Option<(PowerAction, f64, f64)> {
+        self.buttons.iter().find(|b| b.hovered).map(|b| {
+            let center_x = b.x + b.size / 2.0;
+            let top_y = b.y;
+            (b.action, center_x, top_y)
+        })
+    }
 }

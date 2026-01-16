@@ -31,7 +31,7 @@ use monitors::{fallback_config, MonitorConfig};
 use render::Renderer;
 use transition::{render_with_fade, FadeOutTransition};
 use widgets::{FocusedField, LoginForm, PowerAction, PowerButtons, SessionSelector, UserList};
-use window::GreeterWindow;
+use window::{CursorType, GreeterWindow};
 
 /// Cursor blink interval
 const CURSOR_BLINK_MS: u64 = 500;
@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
     );
 
     // Create X11 window
-    let window = GreeterWindow::new().context("Failed to create window")?;
+    let mut window = GreeterWindow::new().context("Failed to create window")?;
     let width = window.width();
     let height = window.height();
     tracing::info!(width, height, "Window created");
@@ -146,6 +146,13 @@ async fn main() -> Result<()> {
     // Create user list centered on primary monitor (above login form)
     let mut user_list = UserList::new(users, center_x, center_y);
 
+    // Auto-select the first user and fill the form
+    if let Some(username) = user_list.select_first() {
+        tracing::info!(username, "Auto-selected first user");
+        form.set_username(username);
+        form.focused_field = FocusedField::Password; // Skip to password field
+    }
+
     // Create session selector (positioned below login form on primary monitor)
     let selector_width = 200.0;
     let selector_x = center_x - selector_width / 2.0;
@@ -218,6 +225,11 @@ async fn main() -> Result<()> {
                 // Power buttons
                 power_buttons.render(ctx)?;
 
+                // Power button tooltip
+                if let Some((action, center_x, top_y)) = power_buttons.hovered_tooltip_info() {
+                    render_tooltip(ctx, &pango_ctx, &theme, action, center_x, top_y)?;
+                }
+
                 Ok(())
             })?;
         }
@@ -247,6 +259,20 @@ async fn main() -> Result<()> {
                     power_buttons.update_hover(mouse_x, mouse_y);
                     session_selector.update_hover(mouse_x, mouse_y);
                     user_list.update_hover(mouse_x, mouse_y);
+
+                    // Update cursor based on what's being hovered
+                    let cursor = if form.is_over_input(mouse_x, mouse_y) {
+                        CursorType::Text
+                    } else if power_buttons.hovered_action().is_some()
+                        || form.button_contains(mouse_x, mouse_y)
+                        || session_selector.button_contains(mouse_x, mouse_y)
+                        || user_list.contains(mouse_x, mouse_y)
+                    {
+                        CursorType::Pointer
+                    } else {
+                        CursorType::Default
+                    };
+                    window.set_cursor(cursor);
                 }
 
                 Event::ButtonPress(e) => {
@@ -256,10 +282,40 @@ async fn main() -> Result<()> {
                     // Check user list clicks first
                     if let Some(username) = user_list.handle_click(click_x, click_y) {
                         tracing::info!(username, "User selected from list");
-                        form.username = username;
-                        form.password.clear();
+                        form.set_username(username);
+                        form.clear_password();
                         form.focused_field = FocusedField::Password;
                         form.clear_messages();
+                    }
+                    // Check input field clicks (for cursor placement)
+                    else if form.handle_input_click(
+                        click_x,
+                        click_y,
+                        &pango_ctx,
+                        &theme.font_family,
+                        theme.font_size_normal,
+                    ) {
+                        // Click was handled by input field
+                    }
+                    // Check login button click
+                    else if form.button_contains(click_x, click_y) && form.can_submit() {
+                        // Get selected session exec command
+                        let session_exec = session_selector
+                            .selected_exec()
+                            .unwrap_or("gar-session.sh")
+                            .to_string();
+
+                        // Attempt login
+                        if let Some(fade) = handle_login(
+                            &mut client,
+                            &mut form,
+                            &session_exec,
+                            config.effective_fade_duration(),
+                        )
+                        .await?
+                        {
+                            fade_transition = Some(fade);
+                        }
                     }
                     // Check power buttons
                     else if let Some(action) = power_buttons.handle_click(click_x, click_y) {
@@ -324,6 +380,35 @@ async fn main() -> Result<()> {
 
                         keycodes::BACKSPACE => {
                             form.handle_backspace();
+                        }
+
+                        keycodes::DELETE => {
+                            form.handle_delete();
+                        }
+
+                        keycodes::LEFT => {
+                            let shift = e.state.contains(x11rb::protocol::xproto::KeyButMask::SHIFT);
+                            form.handle_left(shift);
+                        }
+
+                        keycodes::RIGHT => {
+                            let shift = e.state.contains(x11rb::protocol::xproto::KeyButMask::SHIFT);
+                            form.handle_right(shift);
+                        }
+
+                        keycodes::HOME => {
+                            let shift = e.state.contains(x11rb::protocol::xproto::KeyButMask::SHIFT);
+                            form.handle_home(shift);
+                        }
+
+                        keycodes::END => {
+                            let shift = e.state.contains(x11rb::protocol::xproto::KeyButMask::SHIFT);
+                            form.handle_end(shift);
+                        }
+
+                        keycodes::UP | keycodes::DOWN => {
+                            // Up/down switch between fields
+                            form.handle_tab();
                         }
 
                         _ => {
@@ -476,4 +561,57 @@ async fn handle_login(
 
     form.is_loading = false;
     Ok(None)
+}
+
+/// Render a tooltip above a power button
+fn render_tooltip(
+    ctx: &cairo::Context,
+    pango_ctx: &pango::Context,
+    theme: &theme::Theme,
+    action: PowerAction,
+    center_x: f64,
+    top_y: f64,
+) -> Result<()> {
+    use crate::render::rounded_rectangle;
+    use pango::{FontDescription, Layout};
+
+    let text = match action {
+        PowerAction::Shutdown => "Shut Down",
+        PowerAction::Reboot => "Restart",
+        PowerAction::Suspend => "Sleep",
+    };
+
+    // Create text layout to measure
+    let layout = Layout::new(pango_ctx);
+    let mut font = FontDescription::new();
+    font.set_family(&theme.font_family);
+    font.set_size(11 * pango::SCALE);
+    layout.set_font_description(Some(&font));
+    layout.set_text(text);
+
+    let (text_w, text_h) = layout.pixel_size();
+    let padding_x = 10.0;
+    let padding_y = 6.0;
+    let tooltip_width = text_w as f64 + padding_x * 2.0;
+    let tooltip_height = text_h as f64 + padding_y * 2.0;
+    let tooltip_x = center_x - tooltip_width / 2.0;
+    let tooltip_y = top_y - tooltip_height - 8.0; // 8px gap above button
+
+    // Background
+    ctx.set_source_rgba(0.1, 0.1, 0.1, 0.9);
+    rounded_rectangle(ctx, tooltip_x, tooltip_y, tooltip_width, tooltip_height, 6.0);
+    ctx.fill()?;
+
+    // Border
+    ctx.set_source_rgba(0.3, 0.3, 0.3, 0.8);
+    rounded_rectangle(ctx, tooltip_x, tooltip_y, tooltip_width, tooltip_height, 6.0);
+    ctx.set_line_width(1.0);
+    ctx.stroke()?;
+
+    // Text
+    ctx.set_source_rgb(0.95, 0.95, 0.95);
+    ctx.move_to(tooltip_x + padding_x, tooltip_y + padding_y);
+    pangocairo::functions::show_layout(ctx, &layout);
+
+    Ok(())
 }

@@ -113,6 +113,7 @@ pub fn render_avatar_image(
 
     // Create circular clip
     ctx.save()?;
+    ctx.new_path(); // Clear any previous path
     let radius = size / 2.0;
     ctx.arc(x + radius, y + radius, radius, 0.0, 2.0 * std::f64::consts::PI);
     ctx.clip();
@@ -143,6 +144,9 @@ pub fn render_avatar_fallback(
     let cx = x + radius;
     let cy = y + radius;
 
+    // Clear any previous path
+    ctx.new_path();
+
     // Background circle with hue-based color
     let (r, g, b) = hue_to_rgb(hue);
     ctx.set_source_rgb(r * 0.6, g * 0.6, b * 0.6);
@@ -170,6 +174,9 @@ pub fn render_avatar_fallback(
 
 /// Render avatar with border (for selected state)
 pub fn render_avatar_border(ctx: &Context, x: f64, y: f64, size: f64, selected: bool) -> Result<()> {
+    // Clear any previous path
+    ctx.new_path();
+
     let radius = size / 2.0;
     let cx = x + radius;
     let cy = y + radius;
