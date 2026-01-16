@@ -45,21 +45,29 @@ impl UserSession {
             (session_cmd[0].clone(), session_cmd[1..].to_vec())
         };
 
+        // Set up XAUTHORITY path (even though we use -auth /dev/null, some apps expect it)
+        let xauthority = format!("{}/.Xauthority", home);
+
         let mut cmd = Command::new(&cmd_path);
         cmd.args(&cmd_args)
             .env_clear()
             .env("DISPLAY", display)
+            .env("XAUTHORITY", &xauthority)
             .env("HOME", &home)
             .env("USER", username)
             .env("LOGNAME", username)
             .env("SHELL", &shell)
-            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+            .env("PATH", format!("{}/.local/bin:{}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", home, home))
             .env("XDG_SESSION_TYPE", "x11")
             .env("XDG_VTNR", vt.to_string())
             .env("XDG_SEAT", "seat0")
             .env("XDG_SESSION_CLASS", "user")
+            .env("XDG_SESSION_DESKTOP", "gar")
+            .env("XDG_CURRENT_DESKTOP", "gar")
             .env("DBUS_SESSION_BUS_ADDRESS", format!("unix:path=/run/user/{}/bus", uid.as_raw()))
             .env("XDG_RUNTIME_DIR", format!("/run/user/{}", uid.as_raw()))
+            .env("XDG_DATA_DIRS", "/usr/local/share:/usr/share")
+            .env("XDG_CONFIG_DIRS", "/etc/xdg")
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
 
