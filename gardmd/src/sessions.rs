@@ -25,16 +25,27 @@ const MIN_UID: u32 = 1000;
 const MAX_UID: u32 = 60000;
 
 /// Enumerate available sessions from .desktop files
-/// Note: Only X11 sessions are listed since gardm runs an X server.
-/// Wayland compositors need to be started differently and can't run on X11.
+/// Returns both X11 and Wayland sessions. The daemon handles launching
+/// each session type appropriately (X11 on existing server, Wayland directly on VT).
 pub fn list_sessions() -> Vec<SessionInfo> {
     let mut sessions = Vec::new();
 
-    // X11 sessions only (Wayland sessions can't run on our X server)
+    // X11 sessions
     for dir in XSESSION_DIRS {
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
                 if let Some(session) = parse_desktop_file(&entry.path(), "x11") {
+                    sessions.push(session);
+                }
+            }
+        }
+    }
+
+    // Wayland sessions
+    for dir in WAYLAND_SESSION_DIRS {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if let Some(session) = parse_desktop_file(&entry.path(), "wayland") {
                     sessions.push(session);
                 }
             }
