@@ -5,6 +5,7 @@
 use anyhow::{Context, Result};
 use nix::unistd::User;
 use std::ffi::CString;
+use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 
@@ -16,10 +17,18 @@ pub struct UserSession {
 
 impl UserSession {
     /// Start a user session
+    ///
+    /// # Arguments
+    /// * `username` - The user to run the session as
+    /// * `session_cmd` - Command to execute (e.g., ["Hyprland"] or ["gar-session.sh"])
+    /// * `session_type` - "x11" or "wayland"
+    /// * `display` - X11 display (e.g., ":0"), None for Wayland sessions
+    /// * `vt` - Virtual terminal number
     pub fn start(
         username: &str,
         session_cmd: &[String],
-        display: &str,
+        session_type: &str,
+        display: Option<&str>,
         vt: u32,
     ) -> Result<Self> {
         let user = User::from_name(username)
@@ -31,6 +40,8 @@ impl UserSession {
         let uid = user.uid;
         let gid = user.gid;
         let username_cstr = CString::new(username).context("Invalid username")?;
+
+        let is_wayland = session_type == "wayland";
 
         // Determine session command
         let (cmd_path, cmd_args) = if session_cmd.is_empty() {
@@ -45,25 +56,17 @@ impl UserSession {
             (session_cmd[0].clone(), session_cmd[1..].to_vec())
         };
 
-        // Set up XAUTHORITY path (even though we use -auth /dev/null, some apps expect it)
-        let xauthority = format!("{}/.Xauthority", home);
-
         let mut cmd = Command::new(&cmd_path);
         cmd.args(&cmd_args)
             .env_clear()
-            .env("DISPLAY", display)
-            .env("XAUTHORITY", &xauthority)
             .env("HOME", &home)
             .env("USER", username)
             .env("LOGNAME", username)
             .env("SHELL", &shell)
             .env("PATH", format!("{}/.local/bin:{}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", home, home))
-            .env("XDG_SESSION_TYPE", "x11")
             .env("XDG_VTNR", vt.to_string())
             .env("XDG_SEAT", "seat0")
             .env("XDG_SESSION_CLASS", "user")
-            .env("XDG_SESSION_DESKTOP", "gar")
-            .env("XDG_CURRENT_DESKTOP", "gar")
             .env("DBUS_SESSION_BUS_ADDRESS", format!("unix:path=/run/user/{}/bus", uid.as_raw()))
             .env("XDG_RUNTIME_DIR", format!("/run/user/{}", uid.as_raw()))
             .env("XDG_DATA_DIRS", "/usr/local/share:/usr/share")
@@ -71,7 +74,25 @@ impl UserSession {
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
 
+        // Session-type specific environment
+        if is_wayland {
+            cmd.env("XDG_SESSION_TYPE", "wayland");
+            // Wayland compositors create their own WAYLAND_DISPLAY
+            // Don't set DISPLAY - that's X11-specific
+            tracing::info!(vt, "Configuring Wayland session environment");
+        } else {
+            // X11 session
+            cmd.env("XDG_SESSION_TYPE", "x11");
+            if let Some(display) = display {
+                cmd.env("DISPLAY", display);
+                cmd.env("XAUTHORITY", format!("{}/.Xauthority", home));
+            }
+            cmd.env("XDG_SESSION_DESKTOP", "gar");
+            cmd.env("XDG_CURRENT_DESKTOP", "gar");
+        }
+
         // Set up process to run as the user
+        let tty_path = format!("/dev/tty{}", vt);
         unsafe {
             let home_for_closure = home.clone();
             cmd.pre_exec(move || {
@@ -85,6 +106,24 @@ impl UserSession {
                 // Change to home directory
                 std::env::set_current_dir(&home_for_closure)?;
 
+                // For Wayland sessions, set up controlling TTY
+                // Wayland compositors need direct TTY access for input/output
+                if is_wayland {
+                    // Create new session (detach from parent's controlling terminal)
+                    libc::setsid();
+
+                    // Open the VT and make it our controlling terminal
+                    let tty = std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&tty_path)?;
+
+                    // Set as controlling terminal (TIOCSCTTY)
+                    if libc::ioctl(tty.as_raw_fd(), libc::TIOCSCTTY, 0) < 0 {
+                        tracing::warn!("Failed to set controlling TTY, compositor may handle this");
+                    }
+                }
+
                 Ok(())
             });
         }
@@ -94,6 +133,7 @@ impl UserSession {
         tracing::info!(
             username,
             session = cmd_path,
+            session_type,
             pid = process.id(),
             "Started user session"
         );

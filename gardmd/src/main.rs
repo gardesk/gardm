@@ -108,7 +108,7 @@ async fn run_test_mode(config: Config) -> Result<()> {
 /// Run as full display manager
 async fn run_display_manager(args: Args, config: Config) -> Result<()> {
     // Determine display and VT
-    let (x_display, x_server) = if args.no_x {
+    let (x_display, mut x_server) = if args.no_x {
         // Use existing X server
         let x_display = args
             .display
@@ -184,27 +184,76 @@ async fn run_display_manager(args: Args, config: Config) -> Result<()> {
 
         match session_result {
             Ok(Some(session_info)) => {
-                // Start user session
                 let vt = x_server.as_ref().map(|x| x.vt()).unwrap_or(1);
-                let mut session = UserSession::start(
-                    &session_info.username,
-                    &session_info.cmd,
-                    &x_display,
-                    vt,
-                )?;
+                let is_wayland = session_info.session_type == "wayland";
 
-                // Wait for session to end
-                tokio::select! {
-                    _ = tokio::task::spawn_blocking(move || session.wait()) => {
-                        tracing::info!("User session ended, restarting greeter");
+                if is_wayland {
+                    // WAYLAND SESSION: Stop X server first, then start compositor
+                    tracing::info!("Wayland session selected, stopping X server");
+
+                    // Stop X server - compositor needs direct VT access
+                    if let Some(x) = x_server.take() {
+                        drop(x); // XServer::drop() handles graceful shutdown
+                        tracing::info!("X server stopped");
                     }
-                    _ = sigterm.recv() => {
-                        tracing::info!("Received SIGTERM during session");
+
+                    // Start Wayland compositor directly on VT
+                    let mut session = UserSession::start(
+                        &session_info.username,
+                        &session_info.cmd,
+                        "wayland",
+                        None, // No DISPLAY for Wayland
+                        vt,
+                    )?;
+
+                    // Wait for session to end
+                    let session_ended = tokio::select! {
+                        _ = tokio::task::spawn_blocking(move || session.wait()) => {
+                            tracing::info!("Wayland session ended");
+                            true
+                        }
+                        _ = sigterm.recv() => {
+                            tracing::info!("Received SIGTERM during Wayland session");
+                            false
+                        }
+                        _ = sigint.recv() => {
+                            tracing::info!("Received SIGINT during Wayland session");
+                            false
+                        }
+                    };
+
+                    if !session_ended {
                         break;
                     }
-                    _ = sigint.recv() => {
-                        tracing::info!("Received SIGINT during session");
-                        break;
+
+                    // Restart X server for greeter
+                    tracing::info!("Restarting X server for greeter");
+                    let new_x = XServer::start(&x_display, vt)?;
+                    vt::switch_to_vt(vt)?;
+                    x_server = Some(new_x);
+                } else {
+                    // X11 SESSION: Keep X server running (existing behavior)
+                    let mut session = UserSession::start(
+                        &session_info.username,
+                        &session_info.cmd,
+                        "x11",
+                        Some(&x_display),
+                        vt,
+                    )?;
+
+                    // Wait for session to end
+                    tokio::select! {
+                        _ = tokio::task::spawn_blocking(move || session.wait()) => {
+                            tracing::info!("X11 session ended, restarting greeter");
+                        }
+                        _ = sigterm.recv() => {
+                            tracing::info!("Received SIGTERM during session");
+                            break;
+                        }
+                        _ = sigint.recv() => {
+                            tracing::info!("Received SIGINT during session");
+                            break;
+                        }
                     }
                 }
             }
@@ -230,6 +279,7 @@ async fn run_display_manager(args: Args, config: Config) -> Result<()> {
 struct SessionStartInfo {
     username: String,
     cmd: Vec<String>,
+    session_type: String,
 }
 
 /// Handle greeter IPC until we get a successful auth and StartSession
@@ -285,12 +335,12 @@ async fn handle_greeter_request(
             (response, None)
         }
 
-        Request::StartSession { cmd, env: _ } => {
+        Request::StartSession { cmd, session_type, env: _ } => {
             if let Some(username) = auth.take_authenticated() {
-                tracing::info!(%username, ?cmd, "Session start requested");
+                tracing::info!(%username, ?cmd, %session_type, "Session start requested");
                 (
                     Response::Success,
-                    Some(SessionStartInfo { username, cmd }),
+                    Some(SessionStartInfo { username, cmd, session_type }),
                 )
             } else {
                 (
