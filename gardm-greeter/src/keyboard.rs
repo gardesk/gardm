@@ -13,11 +13,19 @@ pub mod keycodes {
     pub const SHIFT_L: u8 = 50;
     pub const SHIFT_R: u8 = 62;
     pub const CAPS_LOCK: u8 = 66;
+    pub const LEFT: u8 = 113;
+    pub const UP: u8 = 111;
+    pub const RIGHT: u8 = 114;
+    pub const DOWN: u8 = 116;
+    pub const HOME: u8 = 110;
+    pub const END: u8 = 115;
+    pub const DELETE: u8 = 119;
 }
 
-/// Convert a keycode to a character, considering shift state
+/// Convert a keycode to a character, considering shift and caps lock state
 pub fn keycode_to_char(keycode: u8, state: KeyButMask) -> Option<char> {
-    let shifted = state.contains(KeyButMask::SHIFT);
+    let shift_pressed = state.contains(KeyButMask::SHIFT);
+    let caps_lock_on = state.contains(KeyButMask::LOCK);
 
     // Main alphanumeric keys (evdev keycodes)
     let base = match keycode {
@@ -84,8 +92,17 @@ pub fn keycode_to_char(keycode: u8, state: KeyButMask) -> Option<char> {
         _ => return None,
     };
 
-    // Apply shift transformations
-    let c = if shifted {
+    // For letters: uppercase if shift XOR caps_lock (one but not both)
+    // For symbols: only shift matters
+    let c = if base.is_ascii_lowercase() {
+        // Letters: shift XOR caps_lock determines case
+        if shift_pressed != caps_lock_on {
+            base.to_ascii_uppercase()
+        } else {
+            base
+        }
+    } else if shift_pressed {
+        // Non-letters: only shift affects them
         match base {
             // Numbers to symbols
             '1' => '!',
@@ -109,8 +126,6 @@ pub fn keycode_to_char(keycode: u8, state: KeyButMask) -> Option<char> {
             '.' => '>',
             '/' => '?',
             '`' => '~',
-            // Letters to uppercase
-            c if c.is_ascii_lowercase() => c.to_ascii_uppercase(),
             c => c,
         }
     } else {

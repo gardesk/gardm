@@ -25,6 +25,14 @@ pub struct LoginForm {
     pub is_loading: bool,
     pub cursor_visible: bool,
 
+    // Cursor positions (character index)
+    username_cursor: usize,
+    password_cursor: usize,
+
+    // Selection anchor (None = no selection, Some = selection start)
+    username_selection: Option<usize>,
+    password_selection: Option<usize>,
+
     // Layout dimensions
     x: f64,
     y: f64,
@@ -46,6 +54,10 @@ impl LoginForm {
             info_message: None,
             is_loading: false,
             cursor_visible: true,
+            username_cursor: 0,
+            password_cursor: 0,
+            username_selection: None,
+            password_selection: None,
             x: center_x - width / 2.0,
             y: center_y - height / 2.0,
             width,
@@ -73,6 +85,8 @@ impl LoginForm {
             &self.username,
             self.y + 100.0,
             self.focused_field == FocusedField::Username,
+            self.username_cursor,
+            self.username_selection,
         )?;
 
         // Password field (masked)
@@ -85,6 +99,8 @@ impl LoginForm {
             &masked_password,
             self.y + 170.0,
             self.focused_field == FocusedField::Password,
+            self.password_cursor,
+            self.password_selection,
         )?;
 
         // Error message
@@ -133,10 +149,13 @@ impl LoginForm {
         value: &str,
         y: f64,
         focused: bool,
+        cursor_pos: usize,
+        selection_anchor: Option<usize>,
     ) -> Result<()> {
         let field_x = self.x + 30.0;
         let field_width = self.width - 60.0;
         let field_height = 40.0;
+        let text_start_x = field_x + 12.0;
 
         // Label
         let mut font = FontDescription::new();
@@ -171,23 +190,56 @@ impl LoginForm {
             ctx.stroke()?;
         }
 
+        // Set up font for text measurement
+        font.set_size(theme.font_size_normal * pango::SCALE);
+
+        // Helper to measure text width
+        let measure_text = |s: &str| -> f64 {
+            if s.is_empty() {
+                return 0.0;
+            }
+            let layout = Layout::new(pango_ctx);
+            layout.set_font_description(Some(&font));
+            layout.set_text(s);
+            layout.pixel_size().0 as f64
+        };
+
+        // Draw selection highlight if there's a selection
+        if let Some(anchor) = selection_anchor {
+            if anchor != cursor_pos && !value.is_empty() {
+                let start = anchor.min(cursor_pos);
+                let end = anchor.max(cursor_pos);
+
+                let chars: Vec<char> = value.chars().collect();
+                let text_before_start: String = chars.iter().take(start).collect();
+                let text_before_end: String = chars.iter().take(end).collect();
+
+                let start_x = text_start_x + measure_text(&text_before_start);
+                let end_x = text_start_x + measure_text(&text_before_end);
+
+                // Selection highlight (more pronounced blue)
+                ctx.set_source_rgba(0.2, 0.5, 1.0, 0.6);
+                ctx.rectangle(start_x, y + 8.0, end_x - start_x, 24.0);
+                ctx.fill()?;
+            }
+        }
+
         // Text value
         let tc = &theme.text_primary;
         ctx.set_source_rgb(tc.r, tc.g, tc.b);
-        font.set_size(theme.font_size_normal * pango::SCALE);
         let value_layout = Layout::new(pango_ctx);
         value_layout.set_font_description(Some(&font));
         value_layout.set_text(if value.is_empty() { " " } else { value });
-        ctx.move_to(field_x + 12.0, y + 10.0);
+        ctx.move_to(text_start_x, y + 10.0);
         pangocairo::functions::show_layout(ctx, &value_layout);
 
-        // Cursor (blinking)
+        // Cursor (blinking) - positioned at cursor_pos
         if focused && self.cursor_visible {
-            let (text_width, _) = value_layout.pixel_size();
-            let cursor_x = if value.is_empty() {
-                field_x + 12.0
+            let cursor_x = if value.is_empty() || cursor_pos == 0 {
+                text_start_x
             } else {
-                field_x + 12.0 + text_width as f64
+                let text_before_cursor: String = value.chars().take(cursor_pos).collect();
+                text_start_x + measure_text(&text_before_cursor)
             };
             ctx.set_source_rgb(tc.r, tc.g, tc.b);
             ctx.rectangle(cursor_x, y + 8.0, 2.0, 24.0);
@@ -263,9 +315,25 @@ impl LoginForm {
             return;
         }
 
+        // Delete any selected text first
+        self.delete_selection();
+
         match self.focused_field {
-            FocusedField::Username => self.username.push(key),
-            FocusedField::Password => self.password.push(key),
+            FocusedField::Username => {
+                // Insert at cursor position
+                let pos = self.username_cursor.min(self.username.chars().count());
+                let mut chars: Vec<char> = self.username.chars().collect();
+                chars.insert(pos, key);
+                self.username = chars.into_iter().collect();
+                self.username_cursor = pos + 1;
+            }
+            FocusedField::Password => {
+                let pos = self.password_cursor.min(self.password.chars().count());
+                let mut chars: Vec<char> = self.password.chars().collect();
+                chars.insert(pos, key);
+                self.password = chars.into_iter().collect();
+                self.password_cursor = pos + 1;
+            }
         }
         self.clear_messages();
     }
@@ -276,15 +344,212 @@ impl LoginForm {
             return;
         }
 
+        // If there's a selection, delete it instead of single char
+        if self.delete_selection() {
+            self.clear_messages();
+            return;
+        }
+
         match self.focused_field {
             FocusedField::Username => {
-                self.username.pop();
+                if self.username_cursor > 0 {
+                    let mut chars: Vec<char> = self.username.chars().collect();
+                    chars.remove(self.username_cursor - 1);
+                    self.username = chars.into_iter().collect();
+                    self.username_cursor -= 1;
+                }
             }
             FocusedField::Password => {
-                self.password.pop();
+                if self.password_cursor > 0 {
+                    let mut chars: Vec<char> = self.password.chars().collect();
+                    chars.remove(self.password_cursor - 1);
+                    self.password = chars.into_iter().collect();
+                    self.password_cursor -= 1;
+                }
             }
         }
         self.clear_messages();
+    }
+
+    /// Handle delete key
+    pub fn handle_delete(&mut self) {
+        if self.is_loading {
+            return;
+        }
+
+        // If there's a selection, delete it instead of single char
+        if self.delete_selection() {
+            self.clear_messages();
+            return;
+        }
+
+        match self.focused_field {
+            FocusedField::Username => {
+                let len = self.username.chars().count();
+                if self.username_cursor < len {
+                    let mut chars: Vec<char> = self.username.chars().collect();
+                    chars.remove(self.username_cursor);
+                    self.username = chars.into_iter().collect();
+                }
+            }
+            FocusedField::Password => {
+                let len = self.password.chars().count();
+                if self.password_cursor < len {
+                    let mut chars: Vec<char> = self.password.chars().collect();
+                    chars.remove(self.password_cursor);
+                    self.password = chars.into_iter().collect();
+                }
+            }
+        }
+        self.clear_messages();
+    }
+
+    /// Handle left arrow key (shift = extend selection)
+    pub fn handle_left(&mut self, shift: bool) {
+        match self.focused_field {
+            FocusedField::Username => {
+                if shift && self.username_selection.is_none() {
+                    self.username_selection = Some(self.username_cursor);
+                } else if !shift {
+                    self.username_selection = None;
+                }
+                if self.username_cursor > 0 {
+                    self.username_cursor -= 1;
+                }
+            }
+            FocusedField::Password => {
+                if shift && self.password_selection.is_none() {
+                    self.password_selection = Some(self.password_cursor);
+                } else if !shift {
+                    self.password_selection = None;
+                }
+                if self.password_cursor > 0 {
+                    self.password_cursor -= 1;
+                }
+            }
+        }
+    }
+
+    /// Handle right arrow key (shift = extend selection)
+    pub fn handle_right(&mut self, shift: bool) {
+        match self.focused_field {
+            FocusedField::Username => {
+                if shift && self.username_selection.is_none() {
+                    self.username_selection = Some(self.username_cursor);
+                } else if !shift {
+                    self.username_selection = None;
+                }
+                if self.username_cursor < self.username.chars().count() {
+                    self.username_cursor += 1;
+                }
+            }
+            FocusedField::Password => {
+                if shift && self.password_selection.is_none() {
+                    self.password_selection = Some(self.password_cursor);
+                } else if !shift {
+                    self.password_selection = None;
+                }
+                if self.password_cursor < self.password.chars().count() {
+                    self.password_cursor += 1;
+                }
+            }
+        }
+    }
+
+    /// Handle Home key - move cursor to beginning (shift = extend selection)
+    pub fn handle_home(&mut self, shift: bool) {
+        match self.focused_field {
+            FocusedField::Username => {
+                if shift && self.username_selection.is_none() {
+                    self.username_selection = Some(self.username_cursor);
+                } else if !shift {
+                    self.username_selection = None;
+                }
+                self.username_cursor = 0;
+            }
+            FocusedField::Password => {
+                if shift && self.password_selection.is_none() {
+                    self.password_selection = Some(self.password_cursor);
+                } else if !shift {
+                    self.password_selection = None;
+                }
+                self.password_cursor = 0;
+            }
+        }
+    }
+
+    /// Handle End key - move cursor to end (shift = extend selection)
+    pub fn handle_end(&mut self, shift: bool) {
+        match self.focused_field {
+            FocusedField::Username => {
+                if shift && self.username_selection.is_none() {
+                    self.username_selection = Some(self.username_cursor);
+                } else if !shift {
+                    self.username_selection = None;
+                }
+                self.username_cursor = self.username.chars().count();
+            }
+            FocusedField::Password => {
+                if shift && self.password_selection.is_none() {
+                    self.password_selection = Some(self.password_cursor);
+                } else if !shift {
+                    self.password_selection = None;
+                }
+                self.password_cursor = self.password.chars().count();
+            }
+        }
+    }
+
+    /// Clear any active selection
+    pub fn clear_selection(&mut self) {
+        self.username_selection = None;
+        self.password_selection = None;
+    }
+
+    /// Get selection range for current field (start, end) or None
+    fn get_selection_range(&self) -> Option<(usize, usize)> {
+        match self.focused_field {
+            FocusedField::Username => {
+                self.username_selection.map(|anchor| {
+                    let start = anchor.min(self.username_cursor);
+                    let end = anchor.max(self.username_cursor);
+                    (start, end)
+                })
+            }
+            FocusedField::Password => {
+                self.password_selection.map(|anchor| {
+                    let start = anchor.min(self.password_cursor);
+                    let end = anchor.max(self.password_cursor);
+                    (start, end)
+                })
+            }
+        }
+    }
+
+    /// Delete selected text and return true if there was a selection
+    fn delete_selection(&mut self) -> bool {
+        if let Some((start, end)) = self.get_selection_range() {
+            if start != end {
+                match self.focused_field {
+                    FocusedField::Username => {
+                        let mut chars: Vec<char> = self.username.chars().collect();
+                        chars.drain(start..end);
+                        self.username = chars.into_iter().collect();
+                        self.username_cursor = start;
+                        self.username_selection = None;
+                    }
+                    FocusedField::Password => {
+                        let mut chars: Vec<char> = self.password.chars().collect();
+                        chars.drain(start..end);
+                        self.password = chars.into_iter().collect();
+                        self.password_cursor = start;
+                        self.password_selection = None;
+                    }
+                }
+                return true;
+            }
+        }
+        false
     }
 
     /// Handle tab key (switch focus)
@@ -325,10 +590,154 @@ impl LoginForm {
     /// Clear password field
     pub fn clear_password(&mut self) {
         self.password.clear();
+        self.password_cursor = 0;
+    }
+
+    /// Set username (and move cursor to end)
+    pub fn set_username(&mut self, username: String) {
+        self.username_cursor = username.chars().count();
+        self.username = username;
     }
 
     /// Check if form is ready to submit
     pub fn can_submit(&self) -> bool {
         !self.is_loading && !self.username.is_empty() && !self.password.is_empty()
+    }
+
+    /// Check if a click is on the login button
+    pub fn button_contains(&self, click_x: f64, click_y: f64) -> bool {
+        let btn_width = 120.0;
+        let btn_height = 36.0;
+        let btn_x = self.x + (self.width - btn_width) / 2.0;
+        let btn_y = self.y + 275.0;
+
+        click_x >= btn_x
+            && click_x <= btn_x + btn_width
+            && click_y >= btn_y
+            && click_y <= btn_y + btn_height
+    }
+
+    /// Check if mouse is over an input field (for cursor change)
+    pub fn is_over_input(&self, mouse_x: f64, mouse_y: f64) -> bool {
+        let field_x = self.x + 30.0;
+        let field_width = self.width - 60.0;
+        let field_height = 40.0;
+
+        // Username field (y = self.y + 100.0)
+        let username_y = self.y + 100.0;
+        let over_username = mouse_x >= field_x
+            && mouse_x <= field_x + field_width
+            && mouse_y >= username_y
+            && mouse_y <= username_y + field_height;
+
+        // Password field (y = self.y + 170.0)
+        let password_y = self.y + 170.0;
+        let over_password = mouse_x >= field_x
+            && mouse_x <= field_x + field_width
+            && mouse_y >= password_y
+            && mouse_y <= password_y + field_height;
+
+        over_username || over_password
+    }
+
+    /// Handle click on input field - returns true if click was handled
+    pub fn handle_input_click(
+        &mut self,
+        click_x: f64,
+        click_y: f64,
+        pango_ctx: &pango::Context,
+        font_family: &str,
+        font_size: i32,
+    ) -> bool {
+        let field_x = self.x + 30.0;
+        let field_width = self.width - 60.0;
+        let field_height = 40.0;
+        let text_start_x = field_x + 12.0;
+
+        // Check username field
+        let username_y = self.y + 100.0;
+        if click_x >= field_x
+            && click_x <= field_x + field_width
+            && click_y >= username_y
+            && click_y <= username_y + field_height
+        {
+            self.focused_field = FocusedField::Username;
+            self.username_cursor = self.calculate_cursor_pos(
+                click_x - text_start_x,
+                &self.username,
+                pango_ctx,
+                font_family,
+                font_size,
+            );
+            return true;
+        }
+
+        // Check password field
+        let password_y = self.y + 170.0;
+        if click_x >= field_x
+            && click_x <= field_x + field_width
+            && click_y >= password_y
+            && click_y <= password_y + field_height
+        {
+            self.focused_field = FocusedField::Password;
+            // For password, use masked characters for measurement
+            let masked = "•".repeat(self.password.len());
+            self.password_cursor = self.calculate_cursor_pos(
+                click_x - text_start_x,
+                &masked,
+                pango_ctx,
+                font_family,
+                font_size,
+            );
+            return true;
+        }
+
+        false
+    }
+
+    /// Calculate cursor position from click x offset
+    fn calculate_cursor_pos(
+        &self,
+        click_offset: f64,
+        text: &str,
+        pango_ctx: &pango::Context,
+        font_family: &str,
+        font_size: i32,
+    ) -> usize {
+        if text.is_empty() || click_offset <= 0.0 {
+            return 0;
+        }
+
+        let mut font = FontDescription::new();
+        font.set_family(font_family);
+        font.set_size(font_size * pango::SCALE);
+
+        let chars: Vec<char> = text.chars().collect();
+        let mut best_pos = chars.len();
+        let mut prev_width = 0.0;
+
+        for i in 0..=chars.len() {
+            let substring: String = chars.iter().take(i).collect();
+            let layout = Layout::new(pango_ctx);
+            layout.set_font_description(Some(&font));
+            layout.set_text(&substring);
+            let (width, _) = layout.pixel_size();
+            let width = width as f64;
+
+            // Check if click is closer to this position or the previous one
+            if click_offset < width {
+                // Click is between prev_width and width
+                let mid = (prev_width + width) / 2.0;
+                if click_offset < mid {
+                    best_pos = if i > 0 { i - 1 } else { 0 };
+                } else {
+                    best_pos = i;
+                }
+                break;
+            }
+            prev_width = width;
+        }
+
+        best_pos
     }
 }
