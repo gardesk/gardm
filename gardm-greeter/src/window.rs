@@ -8,6 +8,21 @@ use x11rb::protocol::xproto::*;
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
+/// Standard X11 cursor font glyphs
+mod cursor_glyphs {
+    pub const XC_LEFT_PTR: u16 = 68;   // Default arrow cursor
+    pub const XC_XTERM: u16 = 152;     // I-beam text cursor
+    pub const XC_HAND2: u16 = 60;      // Pointing hand cursor
+}
+
+/// Cursor types available for the greeter
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CursorType {
+    Default,
+    Text,
+    Pointer,
+}
+
 /// Greeter window wrapping X11 connection and window handle
 pub struct GreeterWindow {
     conn: RustConnection,
@@ -17,6 +32,11 @@ pub struct GreeterWindow {
     width: u16,
     height: u16,
     depth: u8,
+    // Cursors
+    cursor_default: Cursor,
+    cursor_text: Cursor,
+    cursor_pointer: Cursor,
+    current_cursor: CursorType,
 }
 
 impl GreeterWindow {
@@ -30,6 +50,18 @@ impl GreeterWindow {
         let root = screen.root;
         let depth = screen.root_depth;
         let visual = screen.root_visual;
+
+        // Clear the root window to black to hide any leftover content from previous session
+        // garbg sets the root background using a pixmap, so we must clear that first
+        // BackPixmap::NONE (0) removes any background pixmap, then background_pixel takes effect
+        conn.change_window_attributes(
+            root,
+            &ChangeWindowAttributesAux::new()
+                .background_pixmap(x11rb::NONE)  // Remove any pixmap (e.g., from garbg)
+                .background_pixel(screen.black_pixel),
+        )?;
+        conn.clear_area(false, root, 0, 0, width, height)?;
+        conn.flush()?;
 
         // Create window
         let window = conn.generate_id().context("Failed to generate window ID")?;
@@ -91,6 +123,53 @@ impl GreeterWindow {
         conn.create_gc(gc, window, &CreateGCAux::new())
             .context("Failed to create GC")?;
 
+        // Load cursor font and create cursors
+        let cursor_font = conn.generate_id().context("Failed to generate font ID")?;
+        conn.open_font(cursor_font, b"cursor")
+            .context("Failed to open cursor font")?;
+
+        let cursor_default = conn.generate_id().context("Failed to generate cursor ID")?;
+        conn.create_glyph_cursor(
+            cursor_default,
+            cursor_font,
+            cursor_font,
+            cursor_glyphs::XC_LEFT_PTR,
+            cursor_glyphs::XC_LEFT_PTR + 1,
+            0xFFFF, 0xFFFF, 0xFFFF, // White foreground
+            0, 0, 0,                 // Black background
+        )
+        .context("Failed to create default cursor")?;
+
+        let cursor_text = conn.generate_id().context("Failed to generate cursor ID")?;
+        conn.create_glyph_cursor(
+            cursor_text,
+            cursor_font,
+            cursor_font,
+            cursor_glyphs::XC_XTERM,
+            cursor_glyphs::XC_XTERM + 1,
+            0xFFFF, 0xFFFF, 0xFFFF,
+            0, 0, 0,
+        )
+        .context("Failed to create text cursor")?;
+
+        let cursor_pointer = conn.generate_id().context("Failed to generate cursor ID")?;
+        conn.create_glyph_cursor(
+            cursor_pointer,
+            cursor_font,
+            cursor_font,
+            cursor_glyphs::XC_HAND2,
+            cursor_glyphs::XC_HAND2 + 1,
+            0xFFFF, 0xFFFF, 0xFFFF,
+            0, 0, 0,
+        )
+        .context("Failed to create pointer cursor")?;
+
+        conn.close_font(cursor_font).context("Failed to close cursor font")?;
+
+        // Set initial cursor
+        conn.change_window_attributes(window, &ChangeWindowAttributesAux::new().cursor(cursor_default))
+            .context("Failed to set initial cursor")?;
+
         // Map and flush
         conn.map_window(window).context("Failed to map window")?;
         conn.flush().context("Failed to flush X connection")?;
@@ -110,6 +189,10 @@ impl GreeterWindow {
             width,
             height,
             depth,
+            cursor_default,
+            cursor_text,
+            cursor_pointer,
+            current_cursor: CursorType::Default,
         })
     }
 
@@ -144,21 +227,43 @@ impl GreeterWindow {
     }
 
     /// Put an ARGB image to the window
+    /// Splits large images into chunks to avoid exceeding X11 request limits
     pub fn put_image(&self, data: &[u8]) -> Result<()> {
-        self.conn
-            .put_image(
-                ImageFormat::Z_PIXMAP,
-                self.window,
-                self.gc,
-                self.width,
-                self.height,
-                0,
-                0,
-                0,
-                self.depth,
-                data,
-            )
-            .context("Failed to put image")?;
+        let bytes_per_row = self.width as usize * 4;
+        let total_rows = self.height as usize;
+
+        // X11 max request is typically 4MB, use 1MB chunks to be safe
+        const MAX_CHUNK_BYTES: usize = 1024 * 1024;
+        let rows_per_chunk = (MAX_CHUNK_BYTES / bytes_per_row).max(1);
+
+        let mut y_offset: i16 = 0;
+        let mut remaining_rows = total_rows;
+        let mut data_offset = 0;
+
+        while remaining_rows > 0 {
+            let chunk_rows = remaining_rows.min(rows_per_chunk);
+            let chunk_bytes = chunk_rows * bytes_per_row;
+            let chunk_data = &data[data_offset..data_offset + chunk_bytes];
+
+            self.conn
+                .put_image(
+                    ImageFormat::Z_PIXMAP,
+                    self.window,
+                    self.gc,
+                    self.width,
+                    chunk_rows as u16,
+                    0,
+                    y_offset,
+                    0,
+                    self.depth,
+                    chunk_data,
+                )
+                .context("Failed to put image chunk")?;
+
+            y_offset += chunk_rows as i16;
+            remaining_rows -= chunk_rows;
+            data_offset += chunk_bytes;
+        }
 
         self.conn.flush().context("Failed to flush after put_image")?;
         Ok(())
@@ -176,6 +281,26 @@ impl GreeterWindow {
         self.conn
             .poll_for_event()
             .context("Failed to poll for X11 event")
+    }
+
+    /// Set the cursor type (only updates if different from current)
+    pub fn set_cursor(&mut self, cursor_type: CursorType) {
+        if self.current_cursor == cursor_type {
+            return;
+        }
+
+        let cursor = match cursor_type {
+            CursorType::Default => self.cursor_default,
+            CursorType::Text => self.cursor_text,
+            CursorType::Pointer => self.cursor_pointer,
+        };
+
+        let _ = self.conn.change_window_attributes(
+            self.window,
+            &ChangeWindowAttributesAux::new().cursor(cursor),
+        );
+        let _ = self.conn.flush();
+        self.current_cursor = cursor_type;
     }
 }
 
