@@ -10,6 +10,11 @@ use tokio::net::UnixStream;
 /// Socket path for gardm IPC
 pub const SOCKET_PATH: &str = "/run/gardm.sock";
 
+/// Default session type for backward compatibility
+fn default_session_type() -> String {
+    "x11".to_string()
+}
+
 /// Requests from greeter to daemon
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -24,6 +29,9 @@ pub enum Request {
     StartSession {
         /// Session command (e.g., ["gar-session.sh"])
         cmd: Vec<String>,
+        /// Session type: "x11" or "wayland"
+        #[serde(default = "default_session_type")]
+        session_type: String,
         /// Additional environment variables
         #[serde(default)]
         env: Vec<String>,
