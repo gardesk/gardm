@@ -182,14 +182,30 @@ async fn run_display_manager(args: Args, config: Config) -> Result<()> {
             tracing::warn!(error = %e, "Failed to kill greeter");
         }
 
+        eprintln!("[MAIN] Greeter session ended, processing result");
+        tracing::debug!(?session_result, "Greeter session ended, processing result");
+
         match session_result {
             Ok(Some(session_info)) => {
+                eprintln!("[MAIN] Got session_info: {} {:?} ({})",
+                    session_info.username, session_info.cmd, session_info.session_type);
+                tracing::info!(
+                    "Processing session start: {} {:?} ({})",
+                    session_info.username,
+                    session_info.cmd,
+                    session_info.session_type
+                );
                 let vt = x_server.as_ref().map(|x| x.vt()).unwrap_or(1);
                 let is_wayland = session_info.session_type == "wayland";
 
                 if is_wayland {
                     // WAYLAND SESSION: Stop X server first, then start compositor
-                    tracing::info!("Wayland session selected, stopping X server");
+                    tracing::info!(
+                        username = %session_info.username,
+                        cmd = ?session_info.cmd,
+                        vt,
+                        "Wayland session selected, stopping X server"
+                    );
 
                     // Stop X server - compositor needs direct VT access
                     if let Some(x) = x_server.take() {
@@ -198,13 +214,29 @@ async fn run_display_manager(args: Args, config: Config) -> Result<()> {
                     }
 
                     // Start Wayland compositor directly on VT
-                    let mut session = UserSession::start(
+                    tracing::info!("Starting Wayland compositor");
+                    let mut session = match UserSession::start(
                         &session_info.username,
+                        &session_info.password,
                         &session_info.cmd,
                         "wayland",
                         None, // No DISPLAY for Wayland
                         vt,
-                    )?;
+                    ) {
+                        Ok(s) => {
+                            tracing::info!(pid = s.pid(), "Wayland session started successfully");
+                            s
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "Failed to start Wayland session");
+                            // Restart X server and try again with greeter
+                            tracing::info!("Restarting X server after Wayland session failure");
+                            let new_x = XServer::start(&x_display, vt)?;
+                            vt::switch_to_vt(vt)?;
+                            x_server = Some(new_x);
+                            continue;
+                        }
+                    };
 
                     // Wait for session to end
                     let session_ended = tokio::select! {
@@ -235,6 +267,7 @@ async fn run_display_manager(args: Args, config: Config) -> Result<()> {
                     // X11 SESSION: Keep X server running (existing behavior)
                     let mut session = UserSession::start(
                         &session_info.username,
+                        &session_info.password,
                         &session_info.cmd,
                         "x11",
                         Some(&x_display),
@@ -278,8 +311,20 @@ async fn run_display_manager(args: Args, config: Config) -> Result<()> {
 /// Information needed to start a user session
 struct SessionStartInfo {
     username: String,
+    password: String, // Needed for PAM open_session in child process
     cmd: Vec<String>,
     session_type: String,
+}
+
+impl std::fmt::Debug for SessionStartInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionStartInfo")
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .field("cmd", &self.cmd)
+            .field("session_type", &self.session_type)
+            .finish()
+    }
 }
 
 /// Handle greeter IPC until we get a successful auth and StartSession
@@ -298,9 +343,20 @@ async fn handle_greeter_session(
 
         let (response, session_info) = handle_greeter_request(request, &mut auth).await;
 
+        eprintln!("[IPC] About to send response, has_session_info={}", session_info.is_some());
+        tracing::debug!(?response, has_session_info = session_info.is_some(), "Sending response to greeter");
         conn.send(&response).await?;
+        eprintln!("[IPC] Response sent successfully");
+        tracing::debug!("Response sent successfully");
 
         if let Some(info) = session_info {
+            eprintln!("[IPC] Returning session info: {} {:?}", info.username, info.cmd);
+            tracing::info!(
+                username = %info.username,
+                cmd = ?info.cmd,
+                session_type = %info.session_type,
+                "Returning session info to main loop"
+            );
             return Ok(Some(info));
         }
     }
@@ -336,12 +392,12 @@ async fn handle_greeter_request(
         }
 
         Request::StartSession { cmd, session_type, env: _ } => {
-            if let Some(username) = auth.take_authenticated() {
+            tracing::debug!("Processing StartSession request");
+            if let Some((username, password)) = auth.take_authenticated() {
                 tracing::info!(%username, ?cmd, %session_type, "Session start requested");
-                (
-                    Response::Success,
-                    Some(SessionStartInfo { username, cmd, session_type }),
-                )
+                let info = SessionStartInfo { username, password, cmd, session_type };
+                tracing::debug!(?info, "Created SessionStartInfo");
+                (Response::Success, Some(info))
             } else {
                 (
                     Response::Error {
