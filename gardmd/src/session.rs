@@ -396,9 +396,6 @@ fn child_process_main(
         }
     }
 
-    // Execute the session command
-    eprintln!("[SESSION] Executing: {} {:?}", cmd_path, cmd_args);
-
     // execve replaces the process image
     match nix::unistd::execve(&cmd_cstr, &argv, env_vars) {
         Ok(_) => unreachable!(), // execve doesn't return on success
@@ -419,30 +416,23 @@ fn pam_authenticate_and_open_session(
 ) -> Result<()> {
     // Set environment variables BEFORE creating PAM client
     // pam_systemd reads these to determine session type and VT
-    eprintln!("[PAM] Setting environment for pam_systemd: type={}, vt={}", session_type, vt);
     std::env::set_var("XDG_SESSION_TYPE", session_type);
     std::env::set_var("XDG_VTNR", vt.to_string());
     std::env::set_var("XDG_SEAT", "seat0");
     std::env::set_var("XDG_SESSION_CLASS", "user");
-
-    eprintln!("[PAM] Creating PAM client for user {}", username);
 
     let mut client = Client::with_password(PAM_SERVICE_NAME)
         .map_err(|e| anyhow!("Failed to create PAM client: {:?}", e))?;
 
     client.conversation_mut().set_credentials(username, password);
 
-    eprintln!("[PAM] Authenticating...");
     client
         .authenticate()
         .map_err(|e| anyhow!("PAM authentication failed: {:?}", e))?;
 
-    eprintln!("[PAM] Opening session...");
     client
         .open_session()
         .map_err(|e| anyhow!("PAM open_session failed: {:?}", e))?;
-
-    eprintln!("[PAM] Session opened successfully");
 
     // Keep the client alive - don't let it drop and close the session
     // The session will be closed when the process exits

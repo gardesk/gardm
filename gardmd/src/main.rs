@@ -182,13 +182,10 @@ async fn run_display_manager(args: Args, config: Config) -> Result<()> {
             tracing::warn!(error = %e, "Failed to kill greeter");
         }
 
-        eprintln!("[MAIN] Greeter session ended, processing result");
         tracing::debug!(?session_result, "Greeter session ended, processing result");
 
         match session_result {
             Ok(Some(session_info)) => {
-                eprintln!("[MAIN] Got session_info: {} {:?} ({})",
-                    session_info.username, session_info.cmd, session_info.session_type);
                 tracing::info!(
                     "Processing session start: {} {:?} ({})",
                     session_info.username,
@@ -343,14 +340,10 @@ async fn handle_greeter_session(
 
         let (response, session_info) = handle_greeter_request(request, &mut auth).await;
 
-        eprintln!("[IPC] About to send response, has_session_info={}", session_info.is_some());
         tracing::debug!(?response, has_session_info = session_info.is_some(), "Sending response to greeter");
         conn.send(&response).await?;
-        eprintln!("[IPC] Response sent successfully");
-        tracing::debug!("Response sent successfully");
 
         if let Some(info) = session_info {
-            eprintln!("[IPC] Returning session info: {} {:?}", info.username, info.cmd);
             tracing::info!(
                 username = %info.username,
                 cmd = ?info.cmd,
