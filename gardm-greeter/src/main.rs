@@ -526,7 +526,11 @@ async fn handle_login(
             form.set_info("Starting session...".to_string());
 
             // Start session with selected session command
-            let session_cmd = vec![session_exec.to_string()];
+            // Split exec on whitespace to separate command from arguments
+            let session_cmd: Vec<String> = session_exec
+                .split_whitespace()
+                .map(String::from)
+                .collect();
             tracing::info!(?session_cmd, %session_type, "Starting session");
 
             let response = client
