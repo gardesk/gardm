@@ -16,8 +16,8 @@ pub enum AuthState {
     Idle,
     /// Waiting for password after CreateSession
     AwaitingPassword { username: String },
-    /// Authentication succeeded
-    Authenticated { username: String },
+    /// Authentication succeeded - stores password for session PAM
+    Authenticated { username: String, password: String },
 }
 
 impl Default for AuthState {
@@ -73,6 +73,9 @@ impl AuthSession {
     /// Attempt authentication with provided password
     ///
     /// This runs PAM authentication in a blocking thread since PAM is synchronous.
+    /// The password is stored temporarily for use by the session spawner, which
+    /// will re-authenticate with PAM in the child process to properly register
+    /// the session with logind.
     pub async fn authenticate(&mut self, password: &str) -> AuthResponse {
         let username = match &self.state {
             AuthState::AwaitingPassword { username } => username.clone(),
@@ -83,18 +86,24 @@ impl AuthSession {
             }
         };
 
-        // Run PAM in blocking thread
-        let password = password.to_string();
+        // Run PAM in blocking thread - this just verifies credentials
+        let password_str = password.to_string();
         let username_for_pam = username.clone();
+        tracing::debug!("Spawning PAM authentication task");
         let result = tokio::task::spawn_blocking(move || {
-            pam_authenticate(&username_for_pam, &password)
+            pam_verify_only(&username_for_pam, &password_str)
         })
         .await;
+        tracing::debug!(?result, "PAM task completed");
 
         match result {
             Ok(Ok(())) => {
                 tracing::info!(%username, "Authentication succeeded");
-                self.state = AuthState::Authenticated { username };
+                // Store password for session spawner to use with PAM open_session
+                self.state = AuthState::Authenticated {
+                    username,
+                    password: password.to_string(),
+                };
                 AuthResponse::Success
             }
             Ok(Err(e)) => {
@@ -116,7 +125,7 @@ impl AuthSession {
 
     /// Cancel the current authentication session
     pub fn cancel(&mut self) {
-        if let AuthState::AwaitingPassword { username } | AuthState::Authenticated { username } =
+        if let AuthState::AwaitingPassword { username } | AuthState::Authenticated { username, .. } =
             &self.state
         {
             tracing::info!(username, "Session cancelled");
@@ -127,26 +136,29 @@ impl AuthSession {
     /// Check if user is authenticated and ready to start session
     pub fn is_authenticated(&self) -> Option<&str> {
         match &self.state {
-            AuthState::Authenticated { username } => Some(username),
+            AuthState::Authenticated { username, .. } => Some(username),
             _ => None,
         }
     }
 
-    /// Consume the authenticated state and return the username
-    pub fn take_authenticated(&mut self) -> Option<String> {
+    /// Consume the authenticated state and return (username, password)
+    /// The password is needed for the session spawner to re-authenticate with PAM
+    pub fn take_authenticated(&mut self) -> Option<(String, String)> {
         if matches!(self.state, AuthState::Authenticated { .. }) {
             let old = std::mem::replace(&mut self.state, AuthState::Idle);
-            if let AuthState::Authenticated { username } = old {
-                return Some(username);
+            if let AuthState::Authenticated { username, password } = old {
+                return Some((username, password));
             }
         }
         None
     }
 }
 
-/// Perform PAM authentication (blocking)
-fn pam_authenticate(username: &str, password: &str) -> Result<()> {
-    tracing::debug!(%username, password_len = password.len(), "Starting PAM authentication");
+/// Verify PAM credentials only (no open_session)
+/// This is used for quick credential verification. The actual session opening
+/// happens in the spawned child process.
+fn pam_verify_only(username: &str, password: &str) -> Result<()> {
+    tracing::debug!(%username, password_len = password.len(), "Verifying PAM credentials");
 
     // Create client with PasswordConv (non-interactive, uses provided password)
     let mut client = Client::with_password(PAM_SERVICE)
@@ -159,21 +171,18 @@ fn pam_authenticate(username: &str, password: &str) -> Result<()> {
 
     tracing::debug!("PAM client created, calling authenticate");
 
-    // Authenticate
+    // Authenticate only - don't open session here
+    // open_session will be called in the spawned child process
     client
         .authenticate()
         .map_err(|e| anyhow!("PAM authentication failed: {:?}", e))?;
 
-    tracing::debug!("PAM authenticate succeeded, opening session");
-
-    // Open session (also does account validation)
-    client
-        .open_session()
-        .map_err(|e| anyhow!("Failed to open PAM session: {:?}", e))?;
-
-    tracing::debug!("PAM session opened successfully");
+    tracing::debug!("PAM credential verification complete");
     Ok(())
 }
+
+/// Service name for PAM - exported for use by session module
+pub const PAM_SERVICE_NAME: &str = PAM_SERVICE;
 
 #[cfg(test)]
 mod tests {
