@@ -1,0 +1,34 @@
+# gardm configuration
+# Place this file at /etc/gardm/config.toml
+
+[general]
+# Default session to launch (without .desktop extension)
+default_session = "gar"
+# Path to greeter executable
+greeter = "/usr/bin/gardm-greeter"
+# VT to use (0 = auto-select)
+vt = 0
+# X11 display
+display = ":0"
+
+[greeter]
+# Background blur radius
+blur_radius = 20
+# Background brightness (0.0-1.0)
+blur_brightness = 0.7
+# Show power buttons (shutdown, reboot, suspend)
+show_power_buttons = true
+# Show session selector dropdown
+show_session_selector = true
+# Use garbg's current wallpaper
+use_garbg_wallpaper = true
+# Fallback wallpaper if garbg not available
+fallback_wallpaper = "/usr/share/backgrounds/default.jpg"
+
+[security]
+# Allow empty passwords (NOT recommended)
+allow_empty_password = false
+# Lock after N failed attempts (0 = disabled)
+lockout_attempts = 5
+# Lockout duration in seconds
+lockout_duration = 300
