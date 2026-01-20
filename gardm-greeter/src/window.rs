@@ -4,7 +4,6 @@
 
 use anyhow::{Context, Result};
 use x11rb::connection::Connection;
-use x11rb::protocol::xkb::{self, ConnectionExt as XkbConnectionExt};
 use x11rb::protocol::xproto::*;
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
@@ -180,10 +179,6 @@ impl GreeterWindow {
             .context("Failed to set input focus")?;
         conn.flush()?;
 
-        // Reset keyboard modifier state (caps lock, num lock) to avoid
-        // inconsistent state when returning from Wayland sessions
-        reset_keyboard_modifiers(&conn);
-
         tracing::info!(width, height, "Created greeter window");
 
         Ok(Self {
@@ -313,55 +308,5 @@ impl Drop for GreeterWindow {
     fn drop(&mut self) {
         let _ = self.conn.destroy_window(self.window);
         let _ = self.conn.flush();
-    }
-}
-
-/// Reset keyboard modifier state (caps lock, num lock) to OFF
-///
-/// This ensures a consistent keyboard state when the greeter starts,
-/// avoiding issues when returning from Wayland sessions where the X server
-/// and physical keyboard state may be out of sync.
-fn reset_keyboard_modifiers(conn: &RustConnection) {
-    // Initialize XKB extension
-    if let Err(e) = conn.xkb_use_extension(1, 0) {
-        tracing::warn!("Failed to initialize XKB extension: {}", e);
-        return;
-    }
-
-    // Use XKB to clear locked modifiers (caps lock = modifier 1, num lock = modifier 4)
-    // The affect_mod_locks mask specifies which modifiers to affect
-    // The mod_locks value specifies the new lock state (0 = unlocked)
-    //
-    // Modifier bits (X11/XKB standard):
-    // - Shift: bit 0
-    // - Lock (Caps): bit 1
-    // - Control: bit 2
-    // - Mod1 (Alt): bit 3
-    // - Mod2 (Num Lock): bit 4
-
-    // Clear caps lock (bit 1) and num lock (bit 4)
-    let affect_locks = ModMask::LOCK | ModMask::M2; // caps lock + num lock
-    let clear_locks = ModMask::from(0u16);          // set to 0 (unlocked)
-
-    // xkb_latch_lock_state signature:
-    // device_spec, affect_mod_locks, mod_locks, lock_group, group_lock,
-    // affect_mod_latches, latch_group, group_latch
-    match conn.xkb_latch_lock_state(
-        xkb::ID::USE_CORE_KBD.into(),
-        affect_locks,          // affect_mod_locks - which locks to change
-        clear_locks,           // mod_locks - new lock state (0 = off)
-        false,                 // lock_group - don't change group lock
-        xkb::Group::M1,        // group_lock - ignored since lock_group is false
-        ModMask::from(0u16),   // affect_mod_latches - don't change latches
-        false,                 // latch_group
-        0u16,                  // group_latch
-    ) {
-        Ok(_) => {
-            let _ = conn.flush();
-            tracing::debug!("Reset keyboard modifier locks (caps lock, num lock)");
-        }
-        Err(e) => {
-            tracing::warn!("Failed to reset keyboard modifiers: {}", e);
-        }
     }
 }
