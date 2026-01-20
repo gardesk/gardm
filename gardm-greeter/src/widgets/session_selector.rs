@@ -25,11 +25,16 @@ pub struct SessionSelector {
 }
 
 impl SessionSelector {
-    /// Create a new session selector
-    pub fn new(sessions: Vec<SessionInfo>, x: f64, y: f64, width: f64) -> Self {
+    /// Create a new session selector with optional default session
+    pub fn new(sessions: Vec<SessionInfo>, x: f64, y: f64, width: f64, default_session: Option<&str>) -> Self {
+        // Find index of default session, or fall back to 0
+        let selected_index = default_session
+            .and_then(|default| sessions.iter().position(|s| s.id == default))
+            .unwrap_or(0);
+
         Self {
             sessions,
-            selected_index: 0,
+            selected_index,
             expanded: false,
             hovered_index: None,
             x,

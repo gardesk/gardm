@@ -81,7 +81,12 @@ pub enum Response {
     Error { message: String },
 
     /// List of available sessions
-    Sessions { sessions: Vec<SessionInfo> },
+    Sessions {
+        sessions: Vec<SessionInfo>,
+        /// Default session ID from daemon config
+        #[serde(default)]
+        default_session: Option<String>,
+    },
 
     /// List of available users
     Users { users: Vec<UserInfo> },

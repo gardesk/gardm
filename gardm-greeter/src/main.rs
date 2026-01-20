@@ -130,11 +130,11 @@ async fn main() -> Result<()> {
     tracing::info!("Connected to gardmd");
 
     // Fetch available sessions
-    let sessions = match client.request(&Request::ListSessions).await? {
-        Response::Sessions { sessions } => sessions,
-        _ => Vec::new(),
+    let (sessions, default_session) = match client.request(&Request::ListSessions).await? {
+        Response::Sessions { sessions, default_session } => (sessions, default_session),
+        _ => (Vec::new(), None),
     };
-    tracing::debug!(?sessions, "Available sessions");
+    tracing::debug!(?sessions, ?default_session, "Available sessions");
 
     // Fetch available users
     let users = match client.request(&Request::ListUsers).await? {
@@ -157,7 +157,7 @@ async fn main() -> Result<()> {
     let selector_width = 200.0;
     let selector_x = center_x - selector_width / 2.0;
     let selector_y = center_y + 180.0; // Below the login form
-    let mut session_selector = SessionSelector::new(sessions, selector_x, selector_y, selector_width);
+    let mut session_selector = SessionSelector::new(sessions, selector_x, selector_y, selector_width, default_session.as_deref());
 
     // Create power buttons (bottom-right corner of primary monitor)
     let mut power_buttons = PowerButtons::new(

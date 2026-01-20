@@ -166,7 +166,7 @@ async fn run_display_manager(args: Args, config: Config) -> Result<()> {
 
         // Handle greeter authentication
         let session_result = tokio::select! {
-            result = handle_greeter_session(&server, &x_display) => result,
+            result = handle_greeter_session(&server, &x_display, &config.general.default_session) => result,
             _ = sigterm.recv() => {
                 tracing::info!("Received SIGTERM during greeter");
                 break;
@@ -328,6 +328,7 @@ impl std::fmt::Debug for SessionStartInfo {
 async fn handle_greeter_session(
     server: &ipc::Server,
     _display: &str,
+    default_session: &str,
 ) -> Result<Option<SessionStartInfo>> {
     let mut conn = server.accept().await?;
     let mut auth = AuthSession::new();
@@ -338,7 +339,7 @@ async fn handle_greeter_session(
             None => return Ok(None), // Greeter disconnected
         };
 
-        let (response, session_info) = handle_greeter_request(request, &mut auth).await;
+        let (response, session_info) = handle_greeter_request(request, &mut auth, default_session).await;
 
         tracing::debug!(?response, has_session_info = session_info.is_some(), "Sending response to greeter");
         conn.send(&response).await?;
@@ -359,6 +360,7 @@ async fn handle_greeter_session(
 async fn handle_greeter_request(
     request: Request,
     auth: &mut AuthSession,
+    default_session: &str,
 ) -> (Response, Option<SessionStartInfo>) {
     use gardmd::auth::AuthResponse;
 
@@ -447,7 +449,10 @@ async fn handle_greeter_request(
 
         Request::ListSessions => {
             let sessions = gardmd::list_sessions();
-            (Response::Sessions { sessions }, None)
+            (Response::Sessions {
+                sessions,
+                default_session: Some(default_session.to_string()),
+            }, None)
         }
 
         Request::ListUsers => {
@@ -458,13 +463,13 @@ async fn handle_greeter_request(
 }
 
 /// Handle a test mode client (same as before, for backwards compatibility)
-async fn handle_test_client(mut conn: ipc::ClientConnection, _config: Config) {
+async fn handle_test_client(mut conn: ipc::ClientConnection, config: Config) {
     let mut auth = AuthSession::new();
 
     loop {
         match conn.recv().await {
             Ok(Some(request)) => {
-                let (response, _) = handle_greeter_request(request, &mut auth).await;
+                let (response, _) = handle_greeter_request(request, &mut auth, &config.general.default_session).await;
                 if let Err(e) = conn.send(&response).await {
                     tracing::error!("Failed to send response: {}", e);
                     break;
