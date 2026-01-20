@@ -28,9 +28,10 @@ thiserror = "1.0"
 # Unix/Linux
 nix = { version = "0.27", features = ["user", "process", "signal"] }
 pam-client = "0.5"
+libc = "0.2"
 
 # X11
-x11rb = { version = "0.13", features = ["allow-unsafe-code", "randr"] }
+x11rb = { version = "0.13", features = ["allow-unsafe-code", "randr", "xkb"] }
 
 # Graphics
 cairo-rs = { version = "0.18", features = ["png"] }

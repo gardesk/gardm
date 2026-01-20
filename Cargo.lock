@@ -731,6 +731,7 @@ dependencies = [
  "cairo-rs",
  "gardm-ipc",
  "image",
+ "libc",
  "nix 0.27.1",
  "pango",
  "pangocairo",

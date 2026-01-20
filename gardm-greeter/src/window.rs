@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result};
 use x11rb::connection::Connection;
+use x11rb::protocol::xkb::{self, ConnectionExt as XkbConnectionExt};
 use x11rb::protocol::xproto::*;
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
@@ -179,6 +180,10 @@ impl GreeterWindow {
             .context("Failed to set input focus")?;
         conn.flush()?;
 
+        // Sync X11 keyboard lock state with kernel state
+        // X11 doesn't query kernel state at startup, so we must do it manually
+        sync_keyboard_locks(&conn);
+
         tracing::info!(width, height, "Created greeter window");
 
         Ok(Self {
@@ -309,4 +314,110 @@ impl Drop for GreeterWindow {
         let _ = self.conn.destroy_window(self.window);
         let _ = self.conn.flush();
     }
+}
+
+/// Sync X11 keyboard lock state with kernel state
+///
+/// X11/Xorg doesn't query the kernel's keyboard lock state at startup - it only
+/// tracks state changes from key events. When returning from a Wayland session,
+/// X11 starts fresh and doesn't know that caps/num lock was already active.
+///
+/// This function queries the kernel's lock state via evdev and sets X11's XKB
+/// state to match, ensuring the greeter's keyboard behavior matches the
+/// physical keyboard state.
+fn sync_keyboard_locks(conn: &RustConnection) {
+
+    // Initialize XKB extension
+    if let Err(e) = conn.xkb_use_extension(1, 0) {
+        tracing::warn!("Failed to initialize XKB: {}", e);
+        return;
+    }
+
+    // Find a keyboard device and query its lock state
+    let (caps_on, num_on) = match query_kernel_lock_state() {
+        Some(state) => state,
+        None => {
+            tracing::debug!("Could not query kernel keyboard state");
+            return;
+        }
+    };
+
+    tracing::info!("Kernel keyboard state: caps_lock={}, num_lock={}", caps_on, num_on);
+
+    // Build modifier mask to match kernel state
+    let mut mod_locks = ModMask::from(0u16);
+    if caps_on {
+        mod_locks |= ModMask::LOCK;
+    }
+    if num_on {
+        mod_locks |= ModMask::M2;
+    }
+
+    // Set X11 XKB state to match kernel
+    let affect_locks = ModMask::LOCK | ModMask::M2;
+    match conn.xkb_latch_lock_state(
+        xkb::ID::USE_CORE_KBD.into(),
+        affect_locks,
+        mod_locks,
+        false,
+        xkb::Group::M1,
+        ModMask::from(0u16),
+        false,
+        0u16,
+    ) {
+        Ok(_) => {
+            let _ = conn.flush();
+            tracing::debug!("Synced X11 lock state with kernel");
+        }
+        Err(e) => {
+            tracing::warn!("Failed to sync keyboard locks: {}", e);
+        }
+    }
+}
+
+/// Query kernel keyboard lock state via evdev EVIOCGLED ioctl
+fn query_kernel_lock_state() -> Option<(bool, bool)> {
+    use std::fs::{self, File};
+    use std::os::unix::io::AsRawFd;
+
+    // evdev LED indices
+    const LED_NUML: u8 = 0;
+    const LED_CAPSL: u8 = 1;
+
+    // EVIOCGLED ioctl - read LED state bitmap
+    // _IOR('E', 0x19, len) where len is LED_MAX/8+1 bytes
+    // For typical keyboards, we just need 1 byte
+    const EVIOCGLED_1: libc::c_ulong = 0x80014519;
+
+    // Find keyboard devices
+    let input_dir = fs::read_dir("/dev/input").ok()?;
+
+    for entry in input_dir.flatten() {
+        let path = entry.path();
+        let name = path.file_name()?.to_str()?;
+
+        // Only check event devices
+        if !name.starts_with("event") {
+            continue;
+        }
+
+        // Try to open and query
+        if let Ok(file) = File::open(&path) {
+            let mut leds: u8 = 0;
+            let fd = file.as_raw_fd();
+
+            // Query LED state
+            let ret = unsafe {
+                libc::ioctl(fd, EVIOCGLED_1, &mut leds as *mut u8)
+            };
+
+            if ret >= 0 {
+                let caps_on = (leds & (1 << LED_CAPSL)) != 0;
+                let num_on = (leds & (1 << LED_NUML)) != 0;
+                return Some((caps_on, num_on));
+            }
+        }
+    }
+
+    None
 }

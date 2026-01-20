@@ -33,3 +33,4 @@ cairo-rs = { workspace = true }
 pango = { workspace = true }
 pangocairo = { workspace = true }
 image = { workspace = true }
+libc = { workspace = true }
