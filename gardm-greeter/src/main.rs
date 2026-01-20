@@ -350,11 +350,6 @@ async fn main() -> Result<()> {
                     }
 
                     match e.detail {
-                        keycodes::ESCAPE => {
-                            tracing::info!("Escape pressed, exiting");
-                            return Ok(());
-                        }
-
                         keycodes::RETURN => {
                             if form.focused_field == FocusedField::Password && form.can_submit() {
                                 // Get selected session exec command and type
