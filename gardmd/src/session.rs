@@ -176,7 +176,7 @@ impl UserSession {
                     gid,
                     &cmd_path,
                     &cmd_args,
-                    &env_vars,
+                    env_vars,  // Pass ownership, will be modified after PAM opens session
                     is_wayland,
                     tty_fd,
                     vt,
@@ -298,7 +298,7 @@ fn child_process_main(
     gid: nix::unistd::Gid,
     cmd_path: &str,
     cmd_args: &[String],
-    env_vars: &[CString],
+    mut env_vars: Vec<CString>,
     is_wayland: bool,
     tty_fd: Option<RawFd>,
     vt: u32,
@@ -320,6 +320,14 @@ fn child_process_main(
     if let Err(e) = pam_authenticate_and_open_session(username, password, vt, session_type) {
         eprintln!("[SESSION] PAM failed: {}", e);
         std::process::exit(1);
+    }
+
+    // After pam_open_session(), pam_systemd sets XDG_SESSION_ID in the environment
+    // Read it and add to the environment we'll pass to the session
+    if let Ok(session_id) = std::env::var("XDG_SESSION_ID") {
+        if let Ok(cstr) = CString::new(format!("XDG_SESSION_ID={}", session_id)) {
+            env_vars.push(cstr);
+        }
     }
 
     // Initialize supplementary groups (must be done as root)
@@ -397,7 +405,7 @@ fn child_process_main(
     }
 
     // execve replaces the process image
-    match nix::unistd::execve(&cmd_cstr, &argv, env_vars) {
+    match nix::unistd::execve(&cmd_cstr, &argv, &env_vars) {
         Ok(_) => unreachable!(), // execve doesn't return on success
         Err(e) => {
             eprintln!("[SESSION] execve failed: {}", e);
