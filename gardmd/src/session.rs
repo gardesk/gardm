@@ -288,8 +288,13 @@ fn build_session_env(
         .collect()
 }
 
-/// Child process main function - handles PAM, privilege drop, TTY setup, and exec
-/// This function either calls exec() or exit() - it never returns
+/// Worker process main function - handles PAM session lifecycle
+///
+/// PAM is weird and gets upset if you exec from the process that opened the session,
+/// registering it automatically as a log-out. Thus, we must fork again and exec in
+/// a grandchild process, while the worker (this process) holds the PAM session open.
+///
+/// This function either waits for the grandchild and exits, or exits on error - it never returns
 fn child_process_main(
     username: &str,
     password: &str,
@@ -299,24 +304,25 @@ fn child_process_main(
     cmd_path: &str,
     cmd_args: &[String],
     mut env_vars: Vec<CString>,
-    is_wayland: bool,
+    _is_wayland: bool,
     tty_fd: Option<RawFd>,
     vt: u32,
     session_type: &str,
 ) -> ! {
     // Create new session (detach from parent's controlling terminal)
     // This must be done before PAM so pam_systemd sees us as a session leader
-    if is_wayland {
-        unsafe {
-            let sid = libc::setsid();
-            if sid < 0 {
-                eprintln!("[SESSION] setsid() failed: {}", std::io::Error::last_os_error());
-            }
+    // Required for ALL session types, not just Wayland - without this, the session
+    // becomes "abandoned" by systemd-logind and polkit won't treat it as active
+    unsafe {
+        let sid = libc::setsid();
+        if sid < 0 {
+            eprintln!("[SESSION] setsid() failed: {}", std::io::Error::last_os_error());
         }
     }
 
     // PAM authentication and session opening
     // This registers the session with systemd-logind for device access
+    // The PAM client is kept alive via mem::forget - it will be cleaned up when this process exits
     if let Err(e) = pam_authenticate_and_open_session(username, password, vt, session_type) {
         eprintln!("[SESSION] PAM failed: {}", e);
         std::process::exit(1);
@@ -330,7 +336,7 @@ fn child_process_main(
         }
     }
 
-    // Initialize supplementary groups (must be done as root)
+    // Initialize supplementary groups (must be done as root, before fork)
     let username_cstr = match CString::new(username) {
         Ok(c) => c,
         Err(e) => {
@@ -344,47 +350,7 @@ fn child_process_main(
         std::process::exit(1);
     }
 
-    // Drop privileges
-    if let Err(e) = nix::unistd::setgid(gid) {
-        eprintln!("[SESSION] setgid failed: {}", e);
-        std::process::exit(1);
-    }
-
-    if let Err(e) = nix::unistd::setuid(uid) {
-        eprintln!("[SESSION] setuid failed: {}", e);
-        std::process::exit(1);
-    }
-
-    // Change to home directory
-    if std::env::set_current_dir(home).is_err() {
-        eprintln!("[SESSION] Failed to chdir to home");
-        // Non-fatal, continue
-    }
-
-    // Set up controlling TTY for Wayland sessions
-    if let Some(fd) = tty_fd {
-        unsafe {
-            // Set as controlling terminal (steal if necessary)
-            if libc::ioctl(fd, libc::TIOCSCTTY, 1) < 0 {
-                eprintln!(
-                    "[SESSION] TIOCSCTTY failed: {}",
-                    std::io::Error::last_os_error()
-                );
-                // Non-fatal for some compositors
-            }
-
-            // Set up stdin/stdout/stderr to the TTY
-            libc::dup2(fd, 0);
-            libc::dup2(fd, 1);
-            libc::dup2(fd, 2);
-
-            if fd > 2 {
-                libc::close(fd);
-            }
-        }
-    }
-
-    // Prepare exec arguments
+    // Prepare exec arguments before fork (to minimize work in grandchild)
     let cmd_cstr = match CString::new(cmd_path) {
         Ok(c) => c,
         Err(e) => {
@@ -404,18 +370,105 @@ fn child_process_main(
         }
     }
 
-    // execve replaces the process image
-    match nix::unistd::execve(&cmd_cstr, &argv, &env_vars) {
-        Ok(_) => unreachable!(), // execve doesn't return on success
-        Err(e) => {
-            eprintln!("[SESSION] execve failed: {}", e);
-            std::process::exit(127);
+    // Fork again! The grandchild will exec the session command, while this worker
+    // process keeps the PAM session open. This is required because PAM treats exec()
+    // from the process that called pam_open_session() as a logout.
+    match unsafe { libc::fork() } {
+        -1 => {
+            eprintln!("[SESSION] Second fork failed: {}", std::io::Error::last_os_error());
+            std::process::exit(1);
+        }
+        0 => {
+            // Grandchild: drop privileges, setup TTY, and exec
+
+            // Drop privileges
+            if let Err(e) = nix::unistd::setgid(gid) {
+                eprintln!("[SESSION] setgid failed: {}", e);
+                std::process::exit(1);
+            }
+
+            if let Err(e) = nix::unistd::setuid(uid) {
+                eprintln!("[SESSION] setuid failed: {}", e);
+                std::process::exit(1);
+            }
+
+            // Change to home directory
+            if std::env::set_current_dir(home).is_err() {
+                eprintln!("[SESSION] Failed to chdir to home");
+                // Non-fatal, continue
+            }
+
+            // Set up controlling TTY for Wayland sessions
+            if let Some(fd) = tty_fd {
+                unsafe {
+                    // Set as controlling terminal (steal if necessary)
+                    if libc::ioctl(fd, libc::TIOCSCTTY, 1) < 0 {
+                        eprintln!(
+                            "[SESSION] TIOCSCTTY failed: {}",
+                            std::io::Error::last_os_error()
+                        );
+                        // Non-fatal for some compositors
+                    }
+
+                    // Set up stdin/stdout/stderr to the TTY
+                    libc::dup2(fd, 0);
+                    libc::dup2(fd, 1);
+                    libc::dup2(fd, 2);
+
+                    if fd > 2 {
+                        libc::close(fd);
+                    }
+                }
+            }
+
+            // execve replaces the process image
+            match nix::unistd::execve(&cmd_cstr, &argv, &env_vars) {
+                Ok(_) => unreachable!(), // execve doesn't return on success
+                Err(e) => {
+                    eprintln!("[SESSION] execve failed: {}", e);
+                    std::process::exit(127);
+                }
+            }
+        }
+        grandchild_pid => {
+            // Worker: wait for grandchild to exit, keeping PAM session alive
+            // Close TTY fd in worker - grandchild has its own copy
+            if let Some(fd) = tty_fd {
+                unsafe { libc::close(fd) };
+            }
+
+            // Wait for grandchild
+            let mut status: libc::c_int = 0;
+            loop {
+                let ret = unsafe { libc::waitpid(grandchild_pid, &mut status, 0) };
+                if ret < 0 {
+                    let err = std::io::Error::last_os_error();
+                    if err.kind() == std::io::ErrorKind::Interrupted {
+                        continue; // EINTR, retry
+                    }
+                    eprintln!("[SESSION] waitpid failed: {}", err);
+                    break;
+                }
+                break;
+            }
+
+            // Grandchild exited - worker process can now exit
+            // The PAM session will be cleaned up when this process terminates
+
+            // Exit with grandchild's exit code
+            let exit_code = if unsafe { libc::WIFEXITED(status) } {
+                unsafe { libc::WEXITSTATUS(status) }
+            } else {
+                1
+            };
+            std::process::exit(exit_code);
         }
     }
 }
 
 /// Authenticate with PAM and open a session
-/// This must be called in the child process before dropping privileges
+/// This must be called in the worker process before forking the grandchild.
+/// The PAM session stays open as long as this process is alive.
 fn pam_authenticate_and_open_session(
     username: &str,
     password: &str,
@@ -443,7 +496,8 @@ fn pam_authenticate_and_open_session(
         .map_err(|e| anyhow!("PAM open_session failed: {:?}", e))?;
 
     // Keep the client alive - don't let it drop and close the session
-    // The session will be closed when the process exits
+    // The worker process will hold this until the grandchild (session) exits
+    // Since the worker never execs, PAM won't treat this as a logout
     std::mem::forget(client);
 
     Ok(())
