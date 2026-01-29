@@ -46,6 +46,10 @@ async fn main() -> Result<()> {
 
     tracing::info!("gardm-greeter starting");
 
+    // Kill any running compositor that might be left over from a previous session
+    // These would render on top of the greeter and block visibility
+    kill_leftover_compositors();
+
     // Load configuration
     let config = GreeterConfig::load().unwrap_or_default();
     tracing::debug!(?config, "Greeter configuration");
@@ -625,4 +629,31 @@ fn render_tooltip(
     pangocairo::functions::show_layout(ctx, &layout);
 
     Ok(())
+}
+
+/// Kill any compositors that might be left over from a previous session
+///
+/// When a user logs out, their compositor (garchomp, picom) may not exit cleanly
+/// and will continue rendering on top of the greeter. We must kill these before
+/// the greeter can be visible.
+fn kill_leftover_compositors() {
+    use std::process::Command;
+
+    let compositors = ["garchomp", "picom", "compton", "xcompmgr"];
+
+    for name in compositors {
+        match Command::new("pkill").args(["-x", name]).status() {
+            Ok(status) if status.success() => {
+                tracing::info!("Killed leftover compositor: {}", name);
+                // Give it a moment to exit and release X resources
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Ok(_) => {
+                // Process not found, which is fine
+            }
+            Err(e) => {
+                tracing::warn!("Failed to kill {}: {}", name, e);
+            }
+        }
+    }
 }
