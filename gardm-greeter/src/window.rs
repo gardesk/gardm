@@ -53,8 +53,42 @@ impl GreeterWindow {
         let visual = screen.root_visual;
 
         // Clear the root window to black to hide any leftover content from previous session
-        // garbg sets the root background using a pixmap, so we must clear that first
-        // BackPixmap::NONE (0) removes any background pixmap, then background_pixel takes effect
+        // garbg sets the root background using a pixmap AND stores the pixmap ID in
+        // _XROOTPMAP_ID and ESETROOT_PMAP_ID atoms. We must clear all of these.
+
+        // First, clear the root pixmap atoms that garbg sets
+        // This prevents compositors from reading stale pixmap references
+        let xrootpmap_atom = conn
+            .intern_atom(false, b"_XROOTPMAP_ID")?
+            .reply()
+            .map(|r| r.atom)
+            .unwrap_or(x11rb::NONE);
+        let esetroot_atom = conn
+            .intern_atom(false, b"ESETROOT_PMAP_ID")?
+            .reply()
+            .map(|r| r.atom)
+            .unwrap_or(x11rb::NONE);
+
+        // Try to free the old pixmap if it exists (to avoid memory leak)
+        if xrootpmap_atom != x11rb::NONE {
+            if let Ok(reply) = conn.get_property(false, root, xrootpmap_atom, AtomEnum::PIXMAP, 0, 1)?.reply() {
+                if reply.format == 32 && !reply.value.is_empty() {
+                    let pixmap_id = u32::from_ne_bytes([
+                        reply.value[0], reply.value[1], reply.value[2], reply.value[3]
+                    ]);
+                    if pixmap_id != 0 {
+                        let _ = conn.free_pixmap(pixmap_id);
+                    }
+                }
+            }
+            // Delete the property
+            let _ = conn.delete_property(root, xrootpmap_atom);
+        }
+        if esetroot_atom != x11rb::NONE {
+            let _ = conn.delete_property(root, esetroot_atom);
+        }
+
+        // Now clear the window's background pixmap attribute and set solid color
         conn.change_window_attributes(
             root,
             &ChangeWindowAttributesAux::new()
