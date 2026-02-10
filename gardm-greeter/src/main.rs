@@ -642,7 +642,9 @@ fn kill_leftover_compositors() {
     let compositors = ["garchomp", "picom", "compton", "xcompmgr"];
 
     for name in compositors {
-        match Command::new("pkill").args(["-x", name]).status() {
+        // Use -f to match full command line (needed for NixOS wrappers
+        // where process names are like .garchomp-wrapped)
+        match Command::new("pkill").args(["-f", name]).status() {
             Ok(status) if status.success() => {
                 tracing::info!("Killed leftover compositor: {}", name);
                 // Give it a moment to exit and release X resources
